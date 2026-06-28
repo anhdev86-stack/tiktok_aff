@@ -18,6 +18,8 @@ export interface AppSettings {
   delayBetweenLoopsMs: number
   /** Delay giữa các page khi 1 account quét nhiều trang creators (ms). */
   delayBetweenPagesMs: number
+  /** Số page 1 shop crawl mỗi lượt trước khi nhường shop kế (burst size). */
+  pagesPerRun: number
   /** Live status written by CrawlerService. */
   crawlerStatus: 'idle' | 'running' | 'sleeping' | 'stopping'
   lastLoopStartedAt: string | null
@@ -42,6 +44,7 @@ export type UpdateAppSettingsInput = Partial<
     | 'delayBetweenAccountsMs'
     | 'delayBetweenLoopsMs'
     | 'delayBetweenPagesMs'
+    | 'pagesPerRun'
   >
 >
 
