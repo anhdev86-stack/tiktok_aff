@@ -337,6 +337,213 @@ export class GoogleSheetsService {
   }
 
   /**
+   * INSERT-ONLY theo key: chỉ APPEND creator CHƯA có vào ĐÁY sheet, BỎ QUA
+   * creator đã tồn tại (không update, không ghi đè), KHÔNG đụng các dòng cũ.
+   *
+   * Khác `upsertWorksheets` (đọc + merge + ghi đè TOÀN BỘ sheet → update dòng
+   * trùng): hàm này chỉ đọc cột key để biết key nào đã có, rồi ghi phần dòng
+   * mới xuống dưới cùng. Lợi: (1) không bao giờ mất/đổi dòng đã có; (2) nhẹ hơn
+   * nhiều khi sheet lớn (chỉ ghi phần mới thay vì rewrite ~10k dòng mỗi page).
+   *
+   * Dedupe 2 lớp: bỏ key đã có trên sheet + bỏ key trùng trong chính batch.
+   * Header lệch thứ tự vẫn map đúng theo tên cột; sheet trống thì tự ghi header.
+   */
+  async appendNewRows(params: {
+    spreadsheetId: string;
+    title: string;
+    header: string[];
+    rows: unknown[][];
+    keyColumn: string;
+  }): Promise<{
+    saUsed: string;
+    appended: number;
+    dataRowCount: number;
+    sheetId: number;
+  }> {
+    return this.withSheetLock(params.spreadsheetId, () =>
+      this.rotator.withRotation(async (pick) => {
+        const sheets = this.buildClient(pick);
+
+        // 1) sheetId + grid size (tạo sheet nếu chưa có).
+        const meta = await sheets.spreadsheets.get({
+          spreadsheetId: params.spreadsheetId,
+          fields: 'sheets(properties(sheetId,title,gridProperties))',
+        });
+        let sheetId: number | undefined;
+        let gridRows = 1000;
+        let gridCols = 26;
+        for (const s of meta.data.sheets ?? []) {
+          if (s.properties?.title === params.title) {
+            sheetId = s.properties?.sheetId ?? undefined;
+            gridRows = s.properties?.gridProperties?.rowCount ?? 1000;
+            gridCols = s.properties?.gridProperties?.columnCount ?? 26;
+          }
+        }
+        if (sheetId == null) {
+          const res = await sheets.spreadsheets.batchUpdate({
+            spreadsheetId: params.spreadsheetId,
+            requestBody: {
+              requests: [{ addSheet: { properties: { title: params.title } } }],
+            },
+          });
+          const props = res.data.replies?.[0]?.addSheet?.properties;
+          sheetId = props?.sheetId ?? undefined;
+          gridRows = props?.gridProperties?.rowCount ?? 1000;
+          gridCols = props?.gridProperties?.columnCount ?? 26;
+        }
+        if (sheetId == null) {
+          throw new Error(`Không lấy được sheetId cho "${params.title}"`);
+        }
+
+        // 2) Đọc header (chỉ row 1) — KHÔNG đọc cả sheet để nhẹ khi data lớn.
+        const headerRes = await sheets.spreadsheets.values.get({
+          spreadsheetId: params.spreadsheetId,
+          range: `${params.title}!A1:ZZ1`,
+        });
+        const existingHeader = (headerRes.data.values?.[0] ?? []) as string[];
+        const hasHeader = existingHeader.length > 0;
+
+        // Header dùng để ghi: sheet trống → header truyền vào; đã có → giữ
+        // header cũ, union cột mới (nếu schema đổi) để không lệch dòng.
+        const mergedHeader = hasHeader
+          ? [...existingHeader]
+          : [...params.header];
+        if (hasHeader) {
+          for (const col of params.header) {
+            if (!mergedHeader.includes(col)) mergedHeader.push(col);
+          }
+        }
+        const keyIdx = mergedHeader.indexOf(params.keyColumn);
+        if (keyIdx < 0) {
+          throw new Error(
+            `Key column "${params.keyColumn}" không có trong header`,
+          );
+        }
+
+        // 3) Đọc CỘT key (toàn bộ) để biết key đã tồn tại + đếm số dòng hiện có.
+        const keyColLetter = colLetter(keyIdx + 1);
+        const keyColRes = await sheets.spreadsheets.values.get({
+          spreadsheetId: params.spreadsheetId,
+          range: `${params.title}!${keyColLetter}:${keyColLetter}`,
+          majorDimension: 'COLUMNS',
+        });
+        const keyColCells = (keyColRes.data.values?.[0] ?? []) as string[];
+        // Dòng đầu là header → key data bắt đầu từ index 1.
+        const existingKeys = new Set<string>();
+        for (let i = 1; i < keyColCells.length; i++) {
+          const k = String(keyColCells[i] ?? '').trim();
+          if (k) existingKeys.add(k);
+        }
+        // Tổng số dòng đang dùng (header + data). Sheet trống chưa có header → 0.
+        const currentTotalRows = hasHeader
+          ? Math.max(keyColCells.length, 1)
+          : 0;
+        const dataRowCountBefore = hasHeader
+          ? Math.max(currentTotalRows - 1, 0)
+          : 0;
+
+        // 4) Lọc incoming: chỉ giữ key MỚI (chưa có trên sheet + chưa trùng
+        // trong batch này), rồi map sang đúng thứ tự mergedHeader.
+        const incomingKeyIdx = params.header.indexOf(params.keyColumn);
+        const batchSeen = new Set<string>();
+        const newRows: unknown[][] = [];
+        for (const row of params.rows) {
+          const k = String(row[incomingKeyIdx] ?? '').trim();
+          if (!k || existingKeys.has(k) || batchSeen.has(k)) continue;
+          batchSeen.add(k);
+          newRows.push(
+            mergedHeader.map((h) => {
+              const i = params.header.indexOf(h);
+              return i >= 0 ? normalizeCell(row[i]) : '';
+            }),
+          );
+        }
+
+        // Sheet chưa có header → ghi header trước (A1).
+        if (!hasHeader) {
+          await sheets.spreadsheets.values.update({
+            spreadsheetId: params.spreadsheetId,
+            range: `${params.title}!A1`,
+            valueInputOption: 'RAW',
+            requestBody: { values: [mergedHeader] },
+          });
+        }
+
+        if (newRows.length === 0) {
+          return {
+            saUsed: pick.clientEmail,
+            appended: 0,
+            dataRowCount: dataRowCountBefore,
+            sheetId,
+          };
+        }
+
+        // 5) Vị trí ghi = ngay sau dòng cuối hiện có (header vừa ghi → row 2).
+        const startRow = (hasHeader ? currentTotalRows : 1) + 1;
+        const colCount = mergedHeader.length;
+        const endCol = colLetter(colCount);
+        const finalRow = startRow + newRows.length - 1;
+
+        // 6) Mở rộng grid nếu thiếu (+1000 buffer).
+        const needRows = finalRow + 1000;
+        const needCols = Math.max(colCount, 26);
+        if (gridRows < needRows || gridCols < needCols) {
+          await sheets.spreadsheets.batchUpdate({
+            spreadsheetId: params.spreadsheetId,
+            requestBody: {
+              requests: [
+                {
+                  updateSheetProperties: {
+                    properties: {
+                      sheetId,
+                      gridProperties: {
+                        rowCount: Math.max(gridRows, needRows),
+                        columnCount: Math.max(gridCols, needCols),
+                      },
+                    },
+                    fields:
+                      'gridProperties.rowCount,gridProperties.columnCount',
+                  },
+                },
+              ],
+            },
+          });
+        }
+
+        // 7) Ghi phần MỚI xuống đáy theo chunk 1000 (throttle né rate limit).
+        const CHUNK_SIZE = 1000;
+        let rowCursor = startRow;
+        for (let s = 0; s < newRows.length; s += CHUNK_SIZE) {
+          const chunk = newRows.slice(s, s + CHUNK_SIZE);
+          const endRow = rowCursor + chunk.length - 1;
+          await sheets.spreadsheets.values.update({
+            spreadsheetId: params.spreadsheetId,
+            range: `${params.title}!A${rowCursor}:${endCol}${endRow}`,
+            valueInputOption: 'RAW',
+            requestBody: { values: chunk },
+          });
+          rowCursor = endRow + 1;
+          if (s + CHUNK_SIZE < newRows.length) {
+            await new Promise((r) => setTimeout(r, 200));
+          }
+        }
+
+        this.logger.log(
+          `[${params.title}] appended ${newRows.length} dòng mới ` +
+            `(đã có ${existingKeys.size} key, bỏ qua ${params.rows.length - newRows.length})`,
+        );
+
+        return {
+          saUsed: pick.clientEmail,
+          appended: newRows.length,
+          dataRowCount: dataRowCountBefore + newRows.length,
+          sheetId,
+        };
+      }),
+    );
+  }
+
+  /**
    * Apply format (header style, freeze, banding, autoResize) — gọi 1 lần
    * cuối job, sau khi xong streaming append.
    */

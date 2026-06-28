@@ -33,6 +33,12 @@ export class UpdateAppSettingsDto {
   @Min(0)
   delayBetweenPagesMs?: number;
 
+  /** Số page 1 shop crawl mỗi lượt trước khi nhường shop kế (burst size). */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  pagesPerRun?: number;
+
   // ─── DEPRECATED — moved to CrawlerGroup. Phase 3 will remove these. ──────
 
   /** @deprecated Use CrawlerGroup.spreadsheetId */

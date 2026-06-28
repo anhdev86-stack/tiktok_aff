@@ -1,7 +1,8 @@
 /**
  * CrawlerWriteSheets — builds the Overview (Tổng quan) worksheet payload and
- * calls upsertWorksheets. Each row is prefixed with acc.name as the "Shop"
- * column value. (2 sheet cũ Video nổi bật / Xu hướng đã bỏ để tăng tốc crawl.)
+ * APPENDS chỉ creator mới (insert-only theo 'OEC ID', không update dòng cũ).
+ * Each row is prefixed with acc.name as the "Shop" column value. (2 sheet cũ
+ * Video nổi bật / Xu hướng đã bỏ để tăng tốc crawl.)
  *
  * Phase 2: write() now accepts CrawlerGroupDocument (per-group sheet config)
  * instead of AppSettingsDocument. spreadsheetId + sheet names come from group.
@@ -47,14 +48,13 @@ export class CrawlerWriteSheets {
   constructor(private readonly sheets: GoogleSheetsService) {}
 
   /**
-   * Write sheet Tổng quan (Overview) vào group's spreadsheet. 2 sheet cũ
-   * (Video nổi bật / Xu hướng) đã bỏ — chỉ crawl type 1-3 nuôi Overview.
-   * Upsert key excludes 'Shop' → one row per creator across the whole sheet
-   * (same creator crawled by multiple shops collapses into a single row; the
-   * Shop column reflects whichever shop wrote last). Existing duplicate rows on
-   * the sheet self-collapse on the next write because upsertOne rebuilds the
-   * full row set keyed by these columns.
-   * Sheet config (spreadsheetId, sheet names) now sourced from group (Phase 2).
+   * Ghi sheet Tổng quan (Overview) — INSERT-ONLY theo 'OEC ID': chỉ APPEND
+   * creator CHƯA có vào ĐÁY sheet, BỎ QUA creator đã tồn tại (không update,
+   * không ghi đè), KHÔNG đụng dòng cũ → không bao giờ mất creator đã có.
+   *
+   * Creator trùng OEC ID (kể cả do shop khác đã crawl) chỉ được ghi 1 lần đầu;
+   * lần gặp sau bỏ qua. Cột 'Shop' giữ tên shop ghi đầu tiên.
+   * Sheet config (spreadsheetId, sheet names) lấy từ group (Phase 2).
    */
   async write(
     acc: TiktokAccountDocument,
@@ -68,29 +68,24 @@ export class CrawlerWriteSheets {
 
     const overviewRows = buildOverviewRows(shopName, profiles);
 
-    const result = await this.sheets.upsertWorksheets({
+    const result = await this.sheets.appendNewRows({
       spreadsheetId: group.spreadsheetId,
-      // Streaming: KHÔNG format mỗi page (header style/banding/freeze/autoResize
-      // chỉ cần set 1 lần). Caller gọi formatAll() 1 lần cuối vòng — giảm mạnh
-      // số Sheets write request (gốc lỗi "Quota exceeded").
-      skipFormat: true,
-      worksheets: [
-        {
-          title: group.sheetOverview,
-          header: [...OVERVIEW_HEADER],
-          rows: overviewRows,
-          keyColumns: ['OEC ID'],
-          columnSpecs: OVERVIEW_COL_SPECS,
-        },
-      ],
+      title: group.sheetOverview,
+      header: [...OVERVIEW_HEADER],
+      rows: overviewRows,
+      keyColumn: 'OEC ID',
     });
 
     this.logger.log(
-      `[${shopName}] sheet Tổng quan written via SA=${result.saUsed} ` +
-        `overview=${result.perSheet[group.sheetOverview] ?? 0}`,
+      `[${shopName}] sheet Tổng quan via SA=${result.saUsed} ` +
+        `+${result.appended} mới (tổng ${result.dataRowCount} creator)`,
     );
 
-    return { perSheet: result.perSheet, sheetIds: result.sheetIds };
+    // Trả perSheet = tổng data row + sheetId để formatAll() format đúng vùng.
+    return {
+      perSheet: { [group.sheetOverview]: result.dataRowCount },
+      sheetIds: { [group.sheetOverview]: result.sheetId },
+    };
   }
 
   /**

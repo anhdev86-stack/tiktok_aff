@@ -38,6 +38,17 @@ export class AppSettings {
   @Prop({ default: 0, min: 0 })
   delayBetweenPagesMs!: number;
 
+  /**
+   * Số page MỘT shop crawl mỗi lượt trước khi nhường shop kế (1 page = 12
+   * creator). Default 20 (~240 creator/lượt/shop). Đây là "kích thước burst":
+   * để THẤP khi có NHIỀU shop → mỗi cookie chỉ bắn 1 tràng ngắn rồi nghỉ trong
+   * lúc các shop khác chạy ⇒ tránh bị TikTok hạn chế. Để CAO khi ít shop và
+   * muốn 1 shop khai thác sâu. Tổng throughput = (số shop) × pagesPerRun × 12
+   * mỗi vòng. Lượt sau mỗi shop resume từ crawlCursorPage đã lưu.
+   */
+  @Prop({ default: 20, min: 1 })
+  pagesPerRun!: number;
+
   // ─── DEPRECATED — moved to CrawlerGroup (per-group) ─────────────────────
   // DO NOT use these fields in new code. Phase 3 migration will $unset them.
 
