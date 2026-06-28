@@ -1,0 +1,6 @@
+# Monorepo: chỉ track 2 app folder. Chặn mọi thứ còn lại ở root (gồm .env,
+# .env.production, api-test/ chứa cookie sống, docs/, plans/, build scripts...).
+/*
+!/.gitignore
+!/tiktok-api-backend
+!/shadcn-admin
