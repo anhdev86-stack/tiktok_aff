@@ -92,8 +92,13 @@ export class CrawlerOrchestratorService
 
   async onModuleDestroy(): Promise<void> {
     if (this.reconcileTimer) clearInterval(this.reconcileTimer);
-    this.logger.log('Stopping all workers (graceful 30s)');
-    await Promise.all([...this.workers.values()].map((w) => w.stop(30_000)));
+    this.logger.log('Stopping all workers (graceful 30s, giữ nguyên enabled)');
+    // keepEnabled=true: shutdown KHÔNG phải ý muốn tắt crawl của user. Trước đây
+    // dùng stop() mặc định nên mỗi lần restart/deploy là tắt sạch mọi group và
+    // không bao giờ bật lại — crawler chết im lặng (sự cố 2026-07-16 → 08-04).
+    await Promise.all(
+      [...this.workers.values()].map((w) => w.stop(30_000, true)),
+    );
   }
 
   /**

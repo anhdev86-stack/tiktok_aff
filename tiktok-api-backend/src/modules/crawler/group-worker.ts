@@ -97,16 +97,31 @@ export class GroupWorker {
 
   /**
    * Signal loop to stop. Awaits drain up to timeoutMs (H3).
-   * Sets enabled=false in DB so loop re-reads and exits naturally.
+   *
+   * `keepEnabled` phân biệt HAI loại dừng — trộn lẫn chúng là một bug nghiêm trọng:
+   *
+   *   - false (mặc định): user bấm Stop ⇒ ghi enabled=false. Đây là ý muốn thật
+   *     của user, phải persist để restart không tự chạy lại.
+   *   - true: tiến trình đang shutdown (deploy, restart, SIGTERM) ⇒ KHÔNG được
+   *     đụng enabled. `enabled` là "desire flag" (xem schema): nó nói user MUỐN
+   *     group chạy, không phải "group đang chạy".
+   *
+   * Vì sao quan trọng: trước đây onModuleDestroy gọi stop() mặc định nên MỌI lần
+   * restart container đều tắt sạch tất cả group, và không bao giờ tự bật lại —
+   * crawler chết im lặng cho tới khi có người phát hiện và bấm Start. Đây là lý
+   * do group VN/Thái ngừng crawl từ 2026-07-16 với enabled=false + status kẹt
+   * 'stopping', chứ không phải do user chủ động tắt.
    */
-  async stop(timeoutMs = 30_000): Promise<void> {
+  async stop(timeoutMs = 30_000, keepEnabled = false): Promise<void> {
     // Set cờ TRƯỚC, không phụ thuộc DB. Nếu setEnabled throw (Mongo timeout) mà
     // running vẫn true → loop chạy mãi, bấm Stop vô tác dụng. running=false ở đây
     // mới là thứ thực sự khiến loop + cancellation token dừng.
     this.running = false;
     this.wakeStop?.(); // thoát mọi sleep đang chờ → loop check running ngay
     try {
-      await this.groupService.setEnabled(this.groupId, false);
+      if (!keepEnabled) {
+        await this.groupService.setEnabled(this.groupId, false);
+      }
       await this.groupService.updateStatus(this.groupId, {
         status: 'stopping',
       });
