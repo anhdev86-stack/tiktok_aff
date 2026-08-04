@@ -18,11 +18,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { TiktokSessionManager } from './tiktok-session.manager';
 import type { SignedFetchResult } from './tiktok-browser';
-import {
-  hasLoginSession,
-  MISSING_LOGIN_COOKIE_HINT,
-  parseCookieString,
-} from './cookie.util';
+import { hasLoginSession, parseCookieString } from './cookie.util';
 import {
   flattenOverview,
   flattenOverviewFromCard,
@@ -433,10 +429,12 @@ export class TiktokClientService {
       filter_params: {},
     });
 
-    // Pre-check không cần browser: thiếu token đăng nhập là chắc chắn chết, trả
-    // lời ngay kèm hướng dẫn thay vì tốn ~25s mở Chrome rồi báo lỗi khó hiểu.
+    // KHÔNG chặn ở đây: hasLoginSession chỉ đoán theo tên cookie, đoán sai là
+    // báo cookie tốt thành chết. Cứ thử thật rồi lấy kết quả thật.
     if (!hasLoginSession(parseCookieString(opts.cookie))) {
-      return { alive: false, message: MISSING_LOGIN_COOKIE_HINT };
+      this.logger.warn(
+        `checkCookie: không thấy cookie session theo tên quen thuộc (shop=${opts.shopId}) — vẫn kiểm tra thật`,
+      );
     }
 
     let res: SignedFetchResult;

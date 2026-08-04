@@ -180,10 +180,15 @@ export async function openContextSession(
   if (!msToken) {
     throw new Error('Cookie msToken not found in provided cookie string');
   }
-  // Fail sớm TRƯỚC khi tốn ~25s mở browser: thiếu token đăng nhập thì chắc chắn
-  // bị redirect sang seller.tiktok.com và không bao giờ ký được.
+  // CHỈ cảnh báo, KHÔNG chặn. hasLoginSession chỉ đoán theo tên cookie; TikTok
+  // đặt tên theo sản phẩm (sessionid_tiktokseller, sid_tt_ads…) nên bất kỳ biến
+  // thể chưa biết cũng sẽ bị đoán sai. Chặn ở đây từng làm crawl chết oan với
+  // cookie hoàn toàn hợp lệ (2026-08-04) → để page.url() phán quyết ở dưới.
   if (!hasLoginSession(cookies)) {
-    throw new Error(`cookie chưa đăng nhập — ${MISSING_LOGIN_COOKIE_HINT}`);
+    logger.warn(
+      `Không thấy cookie session theo tên quen thuộc — vẫn thử bootstrap. ` +
+        `Nếu fail vì redirect thì: ${MISSING_LOGIN_COOKIE_HINT}`,
+    );
   }
 
   const context = await browser.createBrowserContext();

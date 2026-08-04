@@ -54,27 +54,31 @@ export function pickCookie(
 
 /**
  * Cookie chứng minh ĐÃ ĐĂNG NHẬP. Đều là httpOnly nên `document.cookie` KHÔNG
- * trả về chúng — đây chính là cái bẫy khiến người dùng dán cookie thiếu session.
+ * trả về chúng — đây là cái bẫy khiến người dùng dán cookie thiếu session.
+ *
+ * PHẢI khớp theo TIỀN TỐ, không phải tên chính xác: TikTok đặt tên cookie session
+ * theo từng sản phẩm nên trên thực tế gặp `sessionid_tiktokseller`,
+ * `sessionid_ss_tiktokseller`, `sid_tt_ads`, `sid_guard_tiktokseller`,
+ * `ssid_ucp_v1_tiktokseller`… KHÔNG có `sessionid` trần.
+ *
+ * Bản đầu của hàm này khớp tên chính xác nên chặn oan cookie hợp lệ (2026-08-04).
  */
-const LOGIN_COOKIE_NAMES = [
-  'sessionid',
-  'sessionid_ss',
-  'sid_tt',
-  'sid_guard',
-  'sid_ucp_v1',
-];
+const LOGIN_COOKIE_PATTERN =
+  /^(sessionid|sid_tt|sid_guard|sid_ucp_v1|ssid_ucp_v1)(_|$)/i;
 
 /**
  * Cookie có token đăng nhập thật hay không.
  *
  * `msToken` KHÔNG tính: nó chỉ là token chống bot, có mặt cả khi chưa login.
- * Thiếu login cookie thì TikTok redirect affiliate.tiktok.com → seller.tiktok.com
- * (trang marketing), trang đó không nạp SDK ký request nên lỗi hiện ra dưới dạng
- * "byted_acrawler missing" — rất dễ chẩn đoán sai thành lỗi SDK.
+ *
+ * ⚠️ Đây là HEURISTIC theo tên cookie, KHÔNG phải bằng chứng. TikTok đổi cách
+ * đặt tên là hàm này sai ngay. Vì vậy nơi gọi chỉ dùng nó để CẢNH BÁO, tuyệt đối
+ * không dùng để chặn — bằng chứng thật là page có bị redirect khỏi
+ * affiliate.tiktok.com hay không (xem openContextSession).
  */
 export function hasLoginSession(cookies: CookieEntry[]): boolean {
   return cookies.some(
-    (c) => LOGIN_COOKIE_NAMES.includes(c.name) && c.value.trim() !== '',
+    (c) => LOGIN_COOKIE_PATTERN.test(c.name) && c.value.trim() !== '',
   );
 }
 
