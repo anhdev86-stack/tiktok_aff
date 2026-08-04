@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle } from 'lucide-react'
 import { toast } from 'sonner'
@@ -29,12 +29,18 @@ export function CookieExpiredDialog() {
   const [cookie, setCookie] = useState('')
   const [probeError, setProbeError] = useState<string | null>(null)
 
-  useEffect(() => {
+  // Reset form khi đổi sang target khác. Điều chỉnh state NGAY trong render
+  // (pattern React docs "Adjusting state when a prop changes") thay vì useEffect:
+  // effect chạy sau commit nên render đầu tiên hiện cookie/lỗi của account TRƯỚC
+  // rồi mới xoá ở render kế — vừa nháy UI vừa là cascading render.
+  const [lastTarget, setLastTarget] = useState(target)
+  if (target !== lastTarget) {
+    setLastTarget(target)
     if (target) {
       setCookie('')
       setProbeError(null)
     }
-  }, [target])
+  }
 
   const submit = useMutation({
     mutationFn: async () => {

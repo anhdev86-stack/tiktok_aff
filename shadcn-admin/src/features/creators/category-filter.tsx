@@ -27,7 +27,9 @@ export function CategoryFilter({ options, loading, value, onChange }: Props) {
   const [search, setSearch] = useState('')
   const [activeParent, setActiveParent] = useState<string | null>(null)
 
-  const parents = options ?? []
+  // Memo hoá để `options === undefined` (lúc đang load) không tạo mảng rỗng MỚI
+  // mỗi render — nếu không, mọi useMemo nhận `parents` làm dep đều tính lại vô ích.
+  const parents = useMemo(() => options ?? [], [options])
 
   const filteredParents = useMemo(() => {
     const q = search.trim().toLowerCase()

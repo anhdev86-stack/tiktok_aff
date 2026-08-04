@@ -4,7 +4,7 @@
  * - Checked = account thuộc nhóm này.
  * - Save → PATCH từng account thay đổi với groupId hoặc null.
  */
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Loader2, Users } from 'lucide-react'
 import { toast } from 'sonner'
@@ -41,20 +41,27 @@ export function GroupAccountsDialog({ open, onOpenChange, group, onSuccess }: Pr
   })
 
   const [checked, setChecked] = useState<Set<string>>(new Set())
-  const initialized = useRef(false)
 
-  useEffect(() => {
-    if (!open) {
-      initialized.current = false
-      setChecked(new Set())
-      return
-    }
-    if (!initialized.current && !isLoading) {
-      initialized.current = true
-      const inGroup = allAccounts.filter((a) => a.groupId === group._id)
-      setChecked(new Set(inGroup.map((a) => a._id)))
-    }
-  }, [open, isLoading, allAccounts, group._id])
+  // Seed checkbox từ dữ liệu server đúng MỘT lần cho mỗi lần mở dialog, ngay khi
+  // query load xong. Điều chỉnh state trong render (pattern React docs "Adjusting
+  // state when a prop changes") thay vì useEffect — effect chạy sau commit nên
+  // danh sách sẽ hiện 1 frame với toàn bộ checkbox trống rồi mới tick, và mỗi lần
+  // `allAccounts` đổi identity do refetch lại kéo theo 1 vòng render thừa.
+  //
+  // `seededFor` giữ id của group đã seed (null = chưa seed / dialog đang đóng),
+  // thay cho cặp useRef + effect cleanup cũ.
+  const [seededFor, setSeededFor] = useState<string | null>(null)
+  const seedTarget = open && !isLoading ? group._id : null
+  if (seedTarget !== seededFor) {
+    setSeededFor(seedTarget)
+    setChecked(
+      seedTarget === null
+        ? new Set()
+        : new Set(
+            allAccounts.filter((a) => a.groupId === group._id).map((a) => a._id),
+          ),
+    )
+  }
 
   const toggle = (id: string) => {
     setChecked((prev) => {

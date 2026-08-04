@@ -107,7 +107,9 @@ export class GroupWorker {
     this.wakeStop?.(); // thoát mọi sleep đang chờ → loop check running ngay
     try {
       await this.groupService.setEnabled(this.groupId, false);
-      await this.groupService.updateStatus(this.groupId, { status: 'stopping' });
+      await this.groupService.updateStatus(this.groupId, {
+        status: 'stopping',
+      });
     } catch (err) {
       this.logger.error(
         `stop(): cập nhật DB lỗi nhưng vẫn dừng loop — ${

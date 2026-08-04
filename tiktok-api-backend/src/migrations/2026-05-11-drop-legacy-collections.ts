@@ -32,7 +32,14 @@
  * Drop will be run manually on production after confirming backup is archived.
  */
 
-import { MongoClient } from 'mongodb';
+// Dùng driver mongodb do mongoose re-export (`mongoose.mongo`) thay vì import
+// thẳng 'mongodb': package đó KHÔNG nằm trong dependencies và không được hoist
+// lên node_modules gốc (chỉ nested trong mongoose) → `npx ts-node` file này sẽ
+// chết MODULE_NOT_FOUND. Đi qua mongoose cũng đảm bảo dùng đúng version driver
+// mà app đang chạy, không lệch version.
+import { mongo } from 'mongoose';
+
+const { MongoClient } = mongo;
 
 const LEGACY_COLLECTIONS = ['creators', 'profile_jobs'] as const;
 

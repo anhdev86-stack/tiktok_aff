@@ -3,7 +3,7 @@
  * - Create mode: props.group = undefined
  * - Edit mode:   props.group = CrawlerGroup (prefill form)
  */
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { crawlerGroupApi } from '@/lib/api-endpoints'
@@ -53,20 +53,26 @@ export function GroupFormDialog({ open, onOpenChange, group, onSuccess }: Props)
 
   const [form, setForm] = useState<FormState>(DEFAULTS)
 
-  // Prefill khi edit mode
-  useEffect(() => {
-    if (group) {
-      setForm({
-        name: group.name,
-        spreadsheetId: group.spreadsheetId ?? '',
-        sheetOverview: group.sheetOverview || 'Tổng quan',
-        sheetTopVideos: group.sheetTopVideos || 'Video nổi bật',
-        sheetTrend: group.sheetTrend || 'Xu hướng',
-      })
-    } else {
-      setForm(DEFAULTS)
-    }
-  }, [group, open])
+  // Prefill khi edit mode / reset khi create mode. Điều chỉnh state NGAY trong
+  // render (pattern React docs "Adjusting state when a prop changes") thay vì
+  // useEffect: effect chạy sau commit nên mở dialog Sửa sẽ thoáng hiện form của
+  // group trước đó rồi mới prefill — vừa nháy UI vừa là cascading render.
+  const [prefillKey, setPrefillKey] = useState<string | null>(null)
+  const currentKey = open ? (group?._id ?? '__new__') : null
+  if (currentKey !== prefillKey) {
+    setPrefillKey(currentKey)
+    setForm(
+      group
+        ? {
+            name: group.name,
+            spreadsheetId: group.spreadsheetId ?? '',
+            sheetOverview: group.sheetOverview || 'Tổng quan',
+            sheetTopVideos: group.sheetTopVideos || 'Video nổi bật',
+            sheetTrend: group.sheetTrend || 'Xu hướng',
+          }
+        : DEFAULTS,
+    )
+  }
 
   const set = (k: keyof FormState, v: string) =>
     setForm((f) => ({ ...f, [k]: v }))

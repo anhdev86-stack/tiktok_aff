@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   CheckCircle2,
@@ -356,8 +356,13 @@ function EditTiktokAccountDialog({
   const qc = useQueryClient()
   const [form, setForm] = useState<UpdateTiktokAccountInput>({})
 
-  // Re-init form when target changes
-  useEffect(() => {
+  // Re-init form khi đổi target. Điều chỉnh state NGAY trong render (pattern
+  // React docs "Adjusting state when a prop changes") thay vì useEffect: effect
+  // chạy sau commit nên dialog Sửa sẽ thoáng hiện dữ liệu account trước đó rồi
+  // mới nạp đúng — vừa nháy UI vừa là cascading render.
+  const [lastTarget, setLastTarget] = useState(target)
+  if (target !== lastTarget) {
+    setLastTarget(target)
     if (target) {
       setForm({
         name: target.name,
@@ -368,7 +373,7 @@ function EditTiktokAccountDialog({
         cookie: '',
       })
     }
-  }, [target])
+  }
 
   const update = useMutation({
     mutationFn: () => {
