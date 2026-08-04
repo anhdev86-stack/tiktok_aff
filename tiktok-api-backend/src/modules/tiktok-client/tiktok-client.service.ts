@@ -200,18 +200,29 @@ export class TiktokClientService {
   /**
    * Tìm creator trong 1 crawl session, phân trang bằng CON TRỎ.
    *
-   * ⚠️ PHẦN DỰNG LẠI — cần kiểm chứng bằng crawl thật: image production không
-   * chứa lớp này nên tên field con trỏ (`search_key` / `next_item_cursor` trong
-   * `pagination` request) là suy ra từ `next_pagination` của response. Nếu
-   * TikTok đặt tên khác, phân trang sẽ tụt về hành vi theo `page` thuần — vẫn
-   * chạy, nhưng có thể lặp creator giữa các page do TikTok re-rank.
-   * Đối chiếu log `[signedFetch] … bodyHead=` ở lần chạy đầu để xác nhận.
+   * PHÂN TRANG: chỉ gửi `{page, size}` — KHÔNG gửi `search_key`/`next_item_cursor`.
+   *
+   * Lần đầu triển khai tôi gửi kèm `search_key` lấy từ `next_pagination` của
+   * response trước, vì tưởng TikTok phân trang bằng con trỏ. Kết quả thực đo
+   * (2026-08-04): page 0 trả 12 creator bình thường, nhưng page 1 kèm
+   * `search_key` trả **0 item** và `has_more:false` → crawler tưởng hết pool,
+   * reset cursor=0, mỗi lượt chỉ lấy lại đúng 12 creator của page 0.
+   *
+   * Gửi thiếu vế còn lại là nguyên nhân: `next_item_cursor` TikTok trả về là
+   * SỐ (`0`), trong khi readNextPagination cũ chỉ nhận `typeof === 'string'` nên
+   * luôn bỏ qua → request có search_key mà không có cursor ⇒ cursor state không
+   * nhất quán ⇒ rỗng.
+   *
+   * Cách phân trang theo `page` thuần là cách ĐÃ CHỨNG MINH chạy được (bản gốc
+   * tích luỹ 2465 creator). Con trỏ vẫn được đọc ra và log lại để sau này muốn
+   * dùng thì có dữ liệu thật mà đối chiếu, nhưng KHÔNG gửi lên nữa.
    */
   async searchCreatorsInSession(
     session: CrawlSession,
     p: {
       page: number;
       categoryList?: Array<[string, string]>;
+      /** Đọc ra để quan sát/log — hiện KHÔNG gửi lên TikTok (xem docblock). */
       searchKey?: string;
       nextItemCursor?: string;
     },
@@ -226,13 +237,9 @@ export class TiktokClientService {
       }));
     }
 
-    const pagination: Record<string, unknown> = { page: p.page, size };
-    if (p.searchKey) pagination.search_key = p.searchKey;
-    if (p.nextItemCursor) pagination.next_item_cursor = p.nextItemCursor;
-
     const body = JSON.stringify({
       query: '',
-      pagination,
+      pagination: { page: p.page, size },
       algorithm: 1,
       filter_params: filterParams,
     });
@@ -258,6 +265,15 @@ export class TiktokClientService {
     const parsed = this.parseJson(res.body);
     const base = mapSearchResponse(parsed, p.page, size);
     const cursor = readNextPagination(parsed);
+
+    // Log con trỏ TikTok trả về ở MỌI page (kể cả page có data) để sau này muốn
+    // chuyển sang phân trang bằng cursor thì có sẵn dữ liệu thật đối chiếu —
+    // trước đây chỉ log khi 0 item nên không biết page thành công trả gì.
+    this.logger.log(
+      `find page=${p.page} → ${base.items.length} items | hasMore=${base.hasMore} ` +
+        `next_page=${cursor.nextPage ?? '-'} next_item_cursor=${cursor.nextItemCursor ?? '-'} ` +
+        `search_key=${cursor.searchKey ? cursor.searchKey.slice(0, 12) + '…' : '-'}`,
+    );
 
     if (base.items.length === 0) {
       this.logger.warn(
@@ -724,7 +740,8 @@ function pickAges(field: unknown): string[] {
 interface NextPaginationRaw {
   has_more?: boolean;
   search_key?: string;
-  next_item_cursor?: string;
+  /** TikTok trả về SỐ (đo thực tế: `"next_item_cursor":0`), không phải chuỗi. */
+  next_item_cursor?: number | string;
   next_page?: number;
 }
 
@@ -740,10 +757,15 @@ function readNextPagination(parsed: unknown): {
   };
   const np = root?.next_pagination ?? root?.response?.next_pagination;
   if (!np) return {};
+  // next_item_cursor về dưới dạng number → ép sang string để type ổn định.
+  // Bản đầu chỉ nhận string nên luôn trả undefined, che mất giá trị thật.
+  const cursor = np.next_item_cursor;
   return {
     searchKey: typeof np.search_key === 'string' ? np.search_key : undefined,
     nextItemCursor:
-      typeof np.next_item_cursor === 'string' ? np.next_item_cursor : undefined,
+      typeof cursor === 'number' || typeof cursor === 'string'
+        ? String(cursor)
+        : undefined,
     nextPage: typeof np.next_page === 'number' ? np.next_page : undefined,
   };
 }
