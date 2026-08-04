@@ -17,6 +17,12 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { TiktokSessionManager } from './tiktok-session.manager';
+import type { SignedFetchResult } from './tiktok-browser';
+import {
+  hasLoginSession,
+  MISSING_LOGIN_COOKIE_HINT,
+  parseCookieString,
+} from './cookie.util';
 import {
   flattenOverview,
   flattenOverviewFromCard,
@@ -37,7 +43,7 @@ const sleep = (ms: number): Promise<void> =>
  * markCookieDead thay vì retry.
  */
 const SESSION_DEAD_PATTERN =
-  /byted_acrawler missing|frontierSign (?:is not a function|threw|not ready)|Bootstrap context .*fail|cookie missing msToken|fetch returned undefined/i;
+  /byted_acrawler missing|frontierSign (?:is not a function|threw|not ready)|Bootstrap context .*fail|cookie missing msToken|cookie chưa đăng nhập|fetch returned undefined/i;
 
 export function isSessionDeadError(err?: string): boolean {
   return !!err && SESSION_DEAD_PATTERN.test(err);
@@ -427,17 +433,36 @@ export class TiktokClientService {
       filter_params: {},
     });
 
-    const res = await this.sessionManager.signAndFetch({
-      cookie: opts.cookie,
-      shopId: opts.shopId,
-      shopRegion: opts.shopRegion,
-      apiPath: FIND_PATH,
-      body,
-      refererUrl,
-    });
+    // Pre-check không cần browser: thiếu token đăng nhập là chắc chắn chết, trả
+    // lời ngay kèm hướng dẫn thay vì tốn ~25s mở Chrome rồi báo lỗi khó hiểu.
+    if (!hasLoginSession(parseCookieString(opts.cookie))) {
+      return { alive: false, message: MISSING_LOGIN_COOKIE_HINT };
+    }
+
+    let res: SignedFetchResult;
+    try {
+      res = await this.sessionManager.signAndFetch({
+        cookie: opts.cookie,
+        shopId: opts.shopId,
+        shopRegion: opts.shopRegion,
+        apiPath: FIND_PATH,
+        body,
+        refererUrl,
+      });
+    } catch (e) {
+      // Bootstrap context throw (cookie chết, browser pool đầy…) — trả về
+      // alive=false kèm nguyên văn lý do, thay vì để controller ném 500 rồi UI
+      // chỉ hiện "Internal server error".
+      return {
+        alive: false,
+        message: (e instanceof Error ? e.message : String(e)).slice(0, 300),
+      };
+    }
 
     if (res.error) {
-      return { alive: false, message: `sign_error: ${res.error.slice(0, 80)}` };
+      // Cắt 300 (không phải 80): thông báo "cookie chưa đăng nhập" kèm hướng dẫn
+      // lấy lại cookie dài hơn 80 ký tự, cắt ngắn là mất đúng phần hữu ích nhất.
+      return { alive: false, message: res.error.slice(0, 300) };
     }
     if (res.status === 401 || res.status === 403) {
       return { alive: false, message: `http_${res.status}` };

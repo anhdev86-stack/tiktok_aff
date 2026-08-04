@@ -51,9 +51,29 @@ export class CrawlerOrchestratorService
     }
     this.logger.log(`Auto-started ${enabled.length} groups`);
 
-    // Cảnh báo group disabled nhưng có account — hint admin phải bấm Start.
+    // Group disabled thì KHÔNG có worker nào chạy, nên mọi status "đang sống"
+    // còn sót lại từ lần chạy trước là sai sự thật. Reset về 'idle'.
+    //
+    // Không reset thì dashboard nói dối: group VN/Thái kẹt ở 'stopping' từ
+    // 16/07/2026 tới 04/08 vì tiến trình dừng khi status vừa đặt 'stopping' mà
+    // `loop()` chưa kịp chạy `finally` để đưa về 'idle'. Nhìn UI tưởng đang tắt
+    // dần, thực tế đã chết hẳn từ lâu.
+    //
+    // Giữ nguyên `lastError` — đó là lý do vì sao nó dừng, vẫn cần cho chẩn đoán.
+    const STALE_LIVE_STATUSES = ['running', 'stopping', 'sleeping'];
     const disabled = allGroups.filter((g) => !g.enabled);
     for (const g of disabled) {
+      if (STALE_LIVE_STATUSES.includes(g.status)) {
+        await this.groups.updateStatus(String(g._id), {
+          status: 'idle',
+          currentAccountId: null,
+        });
+        this.logger.log(
+          `Group "${g.name}" status='${g.status}' nhưng enabled=false ` +
+            `và không có worker — reset về 'idle'`,
+        );
+      }
+
       const cnt = await this.accounts.countByGroup(String(g._id));
       if (cnt > 0) {
         this.logger.warn(

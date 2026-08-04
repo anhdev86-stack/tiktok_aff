@@ -51,3 +51,38 @@ export function pickCookie(
 ): string | null {
   return cookies.find((c) => c.name === name)?.value ?? null;
 }
+
+/**
+ * Cookie chứng minh ĐÃ ĐĂNG NHẬP. Đều là httpOnly nên `document.cookie` KHÔNG
+ * trả về chúng — đây chính là cái bẫy khiến người dùng dán cookie thiếu session.
+ */
+const LOGIN_COOKIE_NAMES = [
+  'sessionid',
+  'sessionid_ss',
+  'sid_tt',
+  'sid_guard',
+  'sid_ucp_v1',
+];
+
+/**
+ * Cookie có token đăng nhập thật hay không.
+ *
+ * `msToken` KHÔNG tính: nó chỉ là token chống bot, có mặt cả khi chưa login.
+ * Thiếu login cookie thì TikTok redirect affiliate.tiktok.com → seller.tiktok.com
+ * (trang marketing), trang đó không nạp SDK ký request nên lỗi hiện ra dưới dạng
+ * "byted_acrawler missing" — rất dễ chẩn đoán sai thành lỗi SDK.
+ */
+export function hasLoginSession(cookies: CookieEntry[]): boolean {
+  return cookies.some(
+    (c) => LOGIN_COOKIE_NAMES.includes(c.name) && c.value.trim() !== '',
+  );
+}
+
+/**
+ * Thông báo hướng dẫn lấy lại cookie đúng cách. Tách riêng để backend, log và
+ * UI dùng chung một câu chữ.
+ */
+export const MISSING_LOGIN_COOKIE_HINT =
+  'Cookie thiếu token đăng nhập (sessionid/sid_tt) — các cookie này là httpOnly nên ' +
+  'copy bằng document.cookie trong Console sẽ KHÔNG có. Lấy lại: DevTools → tab Network → ' +
+  'chọn 1 request tới affiliate.tiktok.com → Headers → Request Headers → copy toàn bộ giá trị "cookie:".';

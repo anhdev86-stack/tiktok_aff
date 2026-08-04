@@ -15,7 +15,12 @@ import type { Logger } from '@nestjs/common';
 import type { Browser, BrowserContext, LaunchOptions, Page } from 'puppeteer';
 import puppeteerExtra from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
-import { parseCookieString, pickCookie } from './cookie.util';
+import {
+  hasLoginSession,
+  MISSING_LOGIN_COOKIE_HINT,
+  parseCookieString,
+  pickCookie,
+} from './cookie.util';
 
 puppeteerExtra.use(StealthPlugin());
 
@@ -175,6 +180,11 @@ export async function openContextSession(
   if (!msToken) {
     throw new Error('Cookie msToken not found in provided cookie string');
   }
+  // Fail sớm TRƯỚC khi tốn ~25s mở browser: thiếu token đăng nhập thì chắc chắn
+  // bị redirect sang seller.tiktok.com và không bao giờ ký được.
+  if (!hasLoginSession(cookies)) {
+    throw new Error(`cookie chưa đăng nhập — ${MISSING_LOGIN_COOKIE_HINT}`);
+  }
 
   const context = await browser.createBrowserContext();
   try {
@@ -209,8 +219,19 @@ export async function openContextSession(
 
     const sdkReady = await waitForFrontierSign(page, 15_000);
     if (sdkReady < 0) {
+      // SDK không lên: phân biệt "bị đá về trang chưa đăng nhập" với "SDK lỗi
+      // thật". Trước đây cả 2 trường hợp đều báo "byted_acrawler missing" nên
+      // cookie hết session bị chẩn đoán sai thành lỗi SDK — mất 2,5 tuần mới
+      // phát hiện crawler đã chết (sự cố 2026-08-04).
+      const landedUrl = page.url();
+      if (!landedUrl.includes('affiliate.tiktok.com')) {
+        throw new Error(
+          `cookie chưa đăng nhập — TikTok redirect sang ${landedUrl} ` +
+            `(mong đợi affiliate.tiktok.com). ${MISSING_LOGIN_COOKIE_HINT}`,
+        );
+      }
       throw new Error(
-        'byted_acrawler.frontierSign not ready in 15s after goto',
+        `byted_acrawler.frontierSign not ready in 15s after goto (url=${landedUrl})`,
       );
     }
     await sleep(4500);
