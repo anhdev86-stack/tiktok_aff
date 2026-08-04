@@ -338,7 +338,7 @@ export class GoogleSheetsService {
 
   /**
    * INSERT-ONLY theo key: chỉ APPEND creator CHƯA có vào ĐÁY sheet, BỎ QUA
-   * creator đã tồn tại (không update, không ghi đè), KHÔNG đụng các dòng cũ.
+   * creator đã tồn tại, KHÔNG đụng các dòng cũ.
    *
    * Khác `upsertWorksheets` (đọc + merge + ghi đè TOÀN BỘ sheet → update dòng
    * trùng): hàm này chỉ đọc cột key để biết key nào đã có, rồi ghi phần dòng
@@ -347,6 +347,13 @@ export class GoogleSheetsService {
    *
    * Dedupe 2 lớp: bỏ key đã có trên sheet + bỏ key trùng trong chính batch.
    * Header lệch thứ tự vẫn map đúng theo tên cột; sheet trống thì tự ghi header.
+   *
+   * `backfillColumns` là NGOẠI LỆ DUY NHẤT của insert-only: với key đã tồn tại,
+   * nếu ô thuộc cột đó đang TRỐNG trên sheet mà data mới có giá trị thì ghi bù
+   * vào đúng ô đó. Cần cho 'Bio': Bio chỉ có từ endpoint /profile, call đó fail
+   * lẻ là chuyện thường, và vì insert-only nên dòng đã ghi thiếu Bio sẽ không
+   * bao giờ được sửa ở lượt sau → Bio mất vĩnh viễn. Chỉ ghi vào ô TRỐNG nên
+   * không bao giờ ghi đè dữ liệu đang có.
    */
   async appendNewRows(params: {
     spreadsheetId: string;
@@ -354,9 +361,11 @@ export class GoogleSheetsService {
     header: string[];
     rows: unknown[][];
     keyColumn: string;
+    backfillColumns?: string[];
   }): Promise<{
     saUsed: string;
     appended: number;
+    backfilled: number;
     dataRowCount: number;
     sheetId: number;
   }> {
@@ -400,7 +409,26 @@ export class GoogleSheetsService {
           spreadsheetId: params.spreadsheetId,
           range: `${params.title}!A1:ZZ1`,
         });
-        const existingHeader = (headerRes.data.values?.[0] ?? []) as string[];
+        const rawHeader = (headerRes.data.values?.[0] ?? []) as string[];
+        // Auto-heal layout: header trên sheet KHÁC layout kỳ vọng (đổi schema,
+        // vd sang 15 cột "Tổng quan" mới) → clear tab 1 lần để ghi lại header +
+        // format đúng. `appendNewRows` vốn GIỮ header cũ nên đổi layout không bao
+        // giờ áp dụng nếu không reset. Sau khi ghi header mới, lần sau header
+        // khớp → KHÔNG clear nữa (giữ nguyên dữ liệu tích lũy, vẫn insert-only).
+        const headerMatches =
+          rawHeader.length === params.header.length &&
+          params.header.every((c, i) => rawHeader[i] === c);
+        if (rawHeader.length > 0 && !headerMatches) {
+          await sheets.spreadsheets.values.clear({
+            spreadsheetId: params.spreadsheetId,
+            range: `${params.title}!A1:ZZ`,
+          });
+          this.logger.log(
+            `[${params.title}] header lệch layout kỳ vọng → reset tab ` +
+              `(clear toàn bộ + ghi header/format mới)`,
+          );
+        }
+        const existingHeader = headerMatches ? rawHeader : [];
         const hasHeader = existingHeader.length > 0;
 
         // Header dùng để ghi: sheet trống → header truyền vào; đã có → giữ
@@ -420,7 +448,17 @@ export class GoogleSheetsService {
           );
         }
 
+        // Sheet vừa bị clear (header lệch) thì chưa có gì để vá → bỏ backfill.
+        const backfillCols = hasHeader
+          ? (params.backfillColumns ?? [])
+              .map((name) => ({ name, idx: mergedHeader.indexOf(name) }))
+              .filter((c) => c.idx >= 0 && params.header.includes(c.name))
+          : [];
+
         // 3) Đọc CỘT key (toàn bộ) để biết key đã tồn tại + đếm số dòng hiện có.
+        // CHỈ cột key: đọc thêm cả cột Bio ở đây sẽ kéo về longText của TOÀN sheet
+        // mỗi lần ghi (~15MB khi 100k creator) — các ô cần vá được đọc riêng ở
+        // bước 4b, chỉ đúng vài ô.
         const keyColLetter = colLetter(keyIdx + 1);
         const keyColRes = await sheets.spreadsheets.values.get({
           spreadsheetId: params.spreadsheetId,
@@ -430,9 +468,14 @@ export class GoogleSheetsService {
         const keyColCells = (keyColRes.data.values?.[0] ?? []) as string[];
         // Dòng đầu là header → key data bắt đầu từ index 1.
         const existingKeys = new Set<string>();
+        // key → SỐ DÒNG trên sheet (1-indexed) để biết ô nào cần vá. Key trùng
+        // (không nên có) thì giữ dòng ĐẦU TIÊN.
+        const rowByKey = new Map<string, number>();
         for (let i = 1; i < keyColCells.length; i++) {
           const k = String(keyColCells[i] ?? '').trim();
-          if (k) existingKeys.add(k);
+          if (!k) continue;
+          existingKeys.add(k);
+          if (!rowByKey.has(k)) rowByKey.set(k, i + 1);
         }
         // Tổng số dòng đang dùng (header + data). Sheet trống chưa có header → 0.
         const currentTotalRows = hasHeader
@@ -443,14 +486,30 @@ export class GoogleSheetsService {
           : 0;
 
         // 4) Lọc incoming: chỉ giữ key MỚI (chưa có trên sheet + chưa trùng
-        // trong batch này), rồi map sang đúng thứ tự mergedHeader.
+        // trong batch này), rồi map sang đúng thứ tự mergedHeader. Key ĐÃ CÓ thì
+        // không append, chỉ ghi nhận làm ứng viên vá ở bước 4b.
         const incomingKeyIdx = params.header.indexOf(params.keyColumn);
         const batchSeen = new Set<string>();
         const newRows: unknown[][] = [];
+        /** Key đã có trên sheet + giá trị mới của các cột backfill (nếu có). */
+        const candidates: Array<{ sheetRow: number; values: string[] }> = [];
         for (const row of params.rows) {
           const k = String(row[incomingKeyIdx] ?? '').trim();
-          if (!k || existingKeys.has(k) || batchSeen.has(k)) continue;
+          if (!k || batchSeen.has(k)) continue;
           batchSeen.add(k);
+          if (existingKeys.has(k)) {
+            const sheetRow = rowByKey.get(k);
+            if (sheetRow != null && backfillCols.length > 0) {
+              const values = backfillCols.map((c) =>
+                String(row[params.header.indexOf(c.name)] ?? '').trim(),
+              );
+              // Không có giá trị mới nào thì không cần đọc ô trên sheet.
+              if (values.some((v) => v !== '')) {
+                candidates.push({ sheetRow, values });
+              }
+            }
+            continue;
+          }
           newRows.push(
             mergedHeader.map((h) => {
               const i = params.header.indexOf(h);
@@ -469,10 +528,54 @@ export class GoogleSheetsService {
           });
         }
 
+        // 4b) Vá ô TRỐNG của key đã tồn tại. Đọc đúng những ô ứng viên (vài chục ô)
+        // rồi chỉ ghi ô nào đang trống → không bao giờ ghi đè dữ liệu đang có.
+        // Phải chạy TRƯỚC nhánh return sớm bên dưới: page toàn creator cũ
+        // (newRows rỗng) lại chính là lúc hay có Bio cần vá nhất.
+        const backfillData: Array<{ range: string; values: [[string]] }> = [];
+        if (candidates.length > 0) {
+          const cellRanges = candidates.flatMap((cand) =>
+            backfillCols.map(
+              (c) => `${params.title}!${colLetter(c.idx + 1)}${cand.sheetRow}`,
+            ),
+          );
+          const cellsRes = await sheets.spreadsheets.values.batchGet({
+            spreadsheetId: params.spreadsheetId,
+            ranges: cellRanges,
+          });
+          const cells = cellsRes.data.valueRanges ?? [];
+          candidates.forEach((cand, ci) => {
+            for (let cj = 0; cj < backfillCols.length; cj++) {
+              const flat = ci * backfillCols.length + cj;
+              // Ô trống → API bỏ hẳn `values` ⇒ undefined = trống.
+              const onSheet = String(
+                cells[flat]?.values?.[0]?.[0] ?? '',
+              ).trim();
+              if (onSheet !== '' || cand.values[cj] === '') continue;
+              backfillData.push({
+                range: cellRanges[flat],
+                values: [[cand.values[cj]]],
+              });
+            }
+          });
+        }
+
+        if (backfillData.length > 0) {
+          await sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: params.spreadsheetId,
+            requestBody: { valueInputOption: 'RAW', data: backfillData },
+          });
+          this.logger.log(
+            `[${params.title}] vá ${backfillData.length} ô trống ` +
+              `(${backfillCols.map((c) => c.name).join(', ')}) vào dòng đã có`,
+          );
+        }
+
         if (newRows.length === 0) {
           return {
             saUsed: pick.clientEmail,
             appended: 0,
+            backfilled: backfillData.length,
             dataRowCount: dataRowCountBefore,
             sheetId,
           };
@@ -536,6 +639,7 @@ export class GoogleSheetsService {
         return {
           saUsed: pick.clientEmail,
           appended: newRows.length,
+          backfilled: backfillData.length,
           dataRowCount: dataRowCountBefore + newRows.length,
           sheetId,
         };

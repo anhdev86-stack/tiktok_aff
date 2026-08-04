@@ -17,8 +17,10 @@
  * (search_key/next_item_cursor) để TikTok không re-rank gây trùng; thêm Set
  * dedup OEC trong lượt. Sheet writer vẫn upsert theo ['OEC ID'].
  *
- * Throws TiktokSearchAuthError when cookie is dead → caller handles markCookieDead.
- * Throws generic Error on network/API failures → caller sets lastError, skips acc.
+ * Throws TiktokSessionDeadError when the session/cookie genuinely can't auth
+ * (login redirect / SDK fail) → caller handles markCookieDead.
+ * Throws generic Error on find code!=0 / network / API failures → caller sets
+ * lastError, skips acc this round, retries next loop (does NOT markCookieDead).
  *
  * Phase 2: signature changed to accept CrawlerGroupDocument (per-group config)
  * instead of AppSettingsDocument. Sheet config and categoryList now come from group.
@@ -68,8 +70,9 @@ export class CrawlerRunOneAccount {
    * Cursor được persist sau mỗi page ghi xong → tổng data lấy được là vô hạn
    * theo pool TikTok (trải qua nhiều lượt rotation), không kẹt ở 1200 như trước.
    *
-   * Throws TiktokSearchAuthError nếu cookie chết.
-   * Throws Error nếu network/API fail — caller xử lý, lượt sau resume từ cursor.
+   * Throws TiktokSessionDeadError nếu session/cookie thật sự không auth được.
+   * Throws Error nếu find code!=0 / network/API fail — caller ghi lastError, KHÔNG
+   * markCookieDead, lượt sau resume từ cursor.
    */
   async runOneAccount(
     acc: TiktokAccountDocument,
@@ -149,10 +152,12 @@ export class CrawlerRunOneAccount {
         const fresh = search.items.filter((c) => !seenOecIds.has(c.oec_id));
         for (const c of fresh) seenOecIds.add(c.oec_id);
 
-        // marketplace/find đã trả đầy đủ field overview → flatten thẳng từ items,
-        // không cần round-trip /profile riêng cho mỗi creator.
-        const profiles = this.tiktok.fullProfile({
+        // flatten từ items. Truyền `session` để fullProfile có thể enrich thêm
+        // /profile mỗi creator (lấy Bio…) khi CRAWLER_ENRICH_PROFILE bật; tắt cờ
+        // thì flatten thẳng thẻ find (nhanh). Lỗi /profile 1 creator không hỏng page.
+        const profiles = await this.tiktok.fullProfile({
           creators: fresh,
+          session,
           shouldStop,
         });
 

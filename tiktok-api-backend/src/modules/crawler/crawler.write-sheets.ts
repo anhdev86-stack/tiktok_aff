@@ -1,6 +1,7 @@
 /**
  * CrawlerWriteSheets — builds the Overview (Tổng quan) worksheet payload and
- * APPENDS chỉ creator mới (insert-only theo 'OEC ID', không update dòng cũ).
+ * APPENDS chỉ creator mới (insert-only theo 'OEC ID'). Ngoại lệ duy nhất: ô 'Bio'
+ * đang TRỐNG của dòng đã có được vá bù (xem backfillColumns trong appendNewRows).
  * Each row is prefixed with acc.name as the "Shop" column value. (2 sheet cũ
  * Video nổi bật / Xu hướng đã bỏ để tăng tốc crawl.)
  *
@@ -51,6 +52,8 @@ export class CrawlerWriteSheets {
    * Ghi sheet Tổng quan (Overview) — INSERT-ONLY theo 'OEC ID': chỉ APPEND
    * creator CHƯA có vào ĐÁY sheet, BỎ QUA creator đã tồn tại (không update,
    * không ghi đè), KHÔNG đụng dòng cũ → không bao giờ mất creator đã có.
+   * Riêng ô 'Bio' trống của dòng cũ thì được vá (backfillColumns) — nếu không,
+   * creator bị lỗi /profile lần đầu sẽ mất Bio vĩnh viễn.
    *
    * Creator trùng OEC ID (kể cả do shop khác đã crawl) chỉ được ghi 1 lần đầu;
    * lần gặp sau bỏ qua. Cột 'Shop' giữ tên shop ghi đầu tiên.
@@ -74,11 +77,17 @@ export class CrawlerWriteSheets {
       header: [...OVERVIEW_HEADER],
       rows: overviewRows,
       keyColumn: 'OEC ID',
+      // Bio chỉ có từ /profile, call đó fail lẻ là chuyện thường. Vì sheet là
+      // insert-only, dòng đã ghi thiếu Bio sẽ không bao giờ được sửa → cho phép
+      // vá riêng ô Bio khi nó đang trống (xem appendNewRows).
+      backfillColumns: ['Bio'],
     });
 
     this.logger.log(
       `[${shopName}] sheet Tổng quan via SA=${result.saUsed} ` +
-        `+${result.appended} mới (tổng ${result.dataRowCount} creator)`,
+        `+${result.appended} mới` +
+        (result.backfilled > 0 ? `, vá ${result.backfilled} Bio` : '') +
+        ` (tổng ${result.dataRowCount} creator)`,
     );
 
     // Trả perSheet = tổng data row + sheetId để formatAll() format đúng vùng.
