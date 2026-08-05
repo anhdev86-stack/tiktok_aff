@@ -156,6 +156,9 @@ export interface CrawlSession {
  */
 const OVERVIEW_PROFILE_TYPES = [1, 2, 3];
 
+/** Danh sách ngành hàng đổi rất chậm — cache 12 tiếng là quá đủ. */
+const CATEGORY_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
+
 @Injectable()
 export class TiktokClientService {
   private readonly logger = new Logger(TiktokClientService.name);
@@ -164,6 +167,55 @@ export class TiktokClientService {
     private readonly cfg: ConfigService,
     private readonly sessionManager: TiktokSessionManager,
   ) {}
+
+  /**
+   * Danh sách cặp [ngànhCha, ngànhCon] để xoay vòng, cache theo shopRegion.
+   *
+   * Cache vì `getMarketplaceOptions` tốn 1 request TikTok, mà danh sách ngành
+   * gần như không đổi. Key theo region: ngành hàng khác nhau giữa VN/TH/PH/MY.
+   */
+  private readonly categoryCache = new Map<
+    string,
+    { pairs: Array<[string, string]>; at: number }
+  >();
+
+  /**
+   * Lấy toàn bộ cặp [cha, con] cho region của account này.
+   *
+   * Trả `[]` nếu không lấy được — caller phải hiểu là "crawl không lọc" chứ
+   * không được để hỏng lượt: mất bộ lọc chỉ làm crawl kém hiệu quả, còn throw
+   * ở đây thì mất luôn cả lượt.
+   */
+  async listCategoryPairs(opts: {
+    cookie: string;
+    shopId: string;
+    shopRegion: string;
+  }): Promise<Array<[string, string]>> {
+    const hit = this.categoryCache.get(opts.shopRegion);
+    if (hit && Date.now() - hit.at < CATEGORY_CACHE_TTL_MS) return hit.pairs;
+
+    try {
+      const o = await this.getMarketplaceOptions(opts);
+      const pairs: Array<[string, string]> = [];
+      for (const parent of o.category) {
+        for (const child of parent.option_children) {
+          pairs.push([parent.id, child.id]);
+        }
+      }
+      this.categoryCache.set(opts.shopRegion, { pairs, at: Date.now() });
+      this.logger.log(
+        `Category rotation region=${opts.shopRegion}: ${o.category.length} ngành chính → ${pairs.length} ngành con`,
+      );
+      return pairs;
+    } catch (e) {
+      this.logger.warn(
+        `Không lấy được danh sách ngành (region=${opts.shopRegion}), crawl không lọc: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+      return [];
+    }
+  }
 
   // ─── Crawl session API (dùng bởi CrawlerRunOneAccount) ───────────────────
 

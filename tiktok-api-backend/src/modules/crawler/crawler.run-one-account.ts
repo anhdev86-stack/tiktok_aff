@@ -55,6 +55,16 @@ const DEFAULT_PAGES_PER_RUN = 20;
 const COOKIE_WRITEBACK =
   (process.env.CRAWLER_COOKIE_WRITEBACK ?? 'true') !== 'false';
 
+/**
+ * Xoay vòng bộ lọc ngành hàng khi group không tự cấu hình bộ lọc.
+ *
+ * Mặc định BẬT: không lọc thì toàn hệ thống bị trần ~240 creator (xem chi tiết
+ * trong runOneAccount). Đặt CRAWLER_CATEGORY_ROTATION=false để về hành vi cũ
+ * (crawl không lọc) nếu cần so sánh hoặc gỡ lỗi.
+ */
+const CATEGORY_ROTATION =
+  (process.env.CRAWLER_CATEGORY_ROTATION ?? 'true') !== 'false';
+
 const sleep = (ms: number): Promise<void> =>
   new Promise((r) => setTimeout(r, ms));
 
@@ -113,11 +123,6 @@ export class CrawlerRunOneAccount {
       sheetIds: Record<string, number>;
     } | null = null;
 
-    const categoryList =
-      group.categoryList.length > 0 ? group.categoryList : undefined;
-
-    this.logger.log(`[${acc.name}] bắt đầu lượt crawl từ page ${page}`);
-
     // Mở 1 browser session DUY NHẤT cho cả lượt (load SDK ~22-30s 1 lần), rồi
     // loop nhiều page bằng searchCreatorsInSession (~1-2s/page). Throw nếu cookie
     // chết → caller markCookieDead.
@@ -126,6 +131,43 @@ export class CrawlerRunOneAccount {
       shopId: acc.shopId,
       shopRegion: acc.shopRegion,
     });
+
+    // ─── Chọn bộ lọc ngành cho lượt này ────────────────────────────────────
+    //
+    // Bộ lọc do group cấu hình luôn được ưu tiên (admin chỉ định rõ thì tôn trọng).
+    // Không có thì XOAY VÒNG qua 188 ngành con, mỗi lượt một ngành khác.
+    //
+    // Vì sao xoay: TikTok chỉ cho với tới ~240 creator đầu của MỘT truy vấn
+    // (`page` bị bỏ qua — đo 2026-08-05). Không lọc thì cả 15 shop hỏi cùng một
+    // bảng xếp hạng ⇒ trần cứng ~240 cho toàn hệ thống, đúng lý do sheet đứng ở
+    // 2878 creator. Mỗi ngành là một bảng riêng nên xoay 188 ngành nâng trần lên
+    // ~45.000, và phần ĐẦU mỗi ngành gần như toàn creator chưa có — hiệu quả hơn
+    // đào sâu một danh sách đã vét cạn.
+    let categoryList =
+      group.categoryList.length > 0 ? group.categoryList : undefined;
+    let nextCategoryIdx: number | null = null;
+    let categoryLabel = 'không lọc';
+
+    if (!categoryList && CATEGORY_ROTATION) {
+      const pairs = await this.tiktok.listCategoryPairs({
+        cookie: acc.cookie,
+        shopId: acc.shopId,
+        shopRegion: acc.shopRegion,
+      });
+      if (pairs.length > 0) {
+        const idx = (acc.crawlCategoryIdx ?? 0) % pairs.length;
+        categoryList = [pairs[idx]];
+        nextCategoryIdx = idx + 1;
+        categoryLabel = `ngành ${idx + 1}/${pairs.length} (${pairs[idx][1]})`;
+        // Mỗi lượt là một NGÀNH KHÁC ⇒ tìm kiếm mới, con trỏ page cũ vô nghĩa.
+        // Bắt đầu từ 0 để đọc đúng phần đầu bảng xếp hạng của ngành này.
+        page = 0;
+      }
+    }
+
+    this.logger.log(
+      `[${acc.name}] bắt đầu lượt crawl từ page ${page} — ${categoryLabel}`,
+    );
 
     try {
       while (pagesThisRun < pagesPerRun) {
@@ -211,6 +253,14 @@ export class CrawlerRunOneAccount {
         if (pageDelay > 0) await sleep(pageDelay);
       }
     } finally {
+      // Tiến sang ngành kế cho lượt sau — làm cả khi lượt này lỗi/stop, vì đứng
+      // mãi ở một ngành đã vét cạn thì không bao giờ ra creator mới.
+      if (nextCategoryIdx !== null) {
+        await this.accounts
+          .setCrawlCategoryIdx(accId, nextCategoryIdx)
+          .catch(() => undefined);
+      }
+
       // Write-back cookie TRƯỚC khi đóng session — context còn sống mới đọc được
       // bản TikTok vừa gia hạn (sessionid mới, sid_guard dài hạn hơn, msToken xoay).
       //

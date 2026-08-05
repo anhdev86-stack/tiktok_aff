@@ -162,6 +162,16 @@ export class TiktokAccountService {
       .exec();
   }
 
+  /** Lưu vị trí vòng xoay ngành hàng — gọi sau mỗi lượt để lượt sau đổi ngành. */
+  async setCrawlCategoryIdx(id: string, idx: number): Promise<void> {
+    await this.model
+      .updateOne(
+        { _id: new Types.ObjectId(id) },
+        { $set: { crawlCategoryIdx: Math.max(0, idx) } },
+      )
+      .exec();
+  }
+
   /**
    * Lưu cookie đã được TikTok gia hạn trong lúc crawl (write-back).
    *

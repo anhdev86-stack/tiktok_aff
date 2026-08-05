@@ -52,6 +52,22 @@ export class TiktokAccount {
   crawlCursorPage!: number;
 
   /**
+   * Vị trí trong vòng xoay NGÀNH HÀNG. Mỗi lượt crawl dùng một ngành khác nhau
+   * rồi tăng chỉ số này.
+   *
+   * Vì sao cần: TikTok chỉ cho với tới ~240 creator đầu của MỘT truy vấn (đo
+   * 2026-08-05 — `page` bị bỏ qua, cursor chỉ đi được trong phạm vi 1 lượt).
+   * Không lọc thì cả 15 shop đều hỏi cùng một bảng xếp hạng ⇒ trần cứng ~240
+   * creator cho toàn hệ thống, đúng lý do sheet đứng ở 2878.
+   *
+   * Mỗi bộ lọc ngành là một bảng xếp hạng RIÊNG, nên xoay qua 188 ngành con
+   * nâng trần lên ~45.000. Đây là cách mở rộng theo BỀ RỘNG thay vì đào sâu một
+   * danh sách — hiệu quả hơn nhiều vì phần đầu mỗi ngành đều là creator chưa có.
+   */
+  @Prop({ type: Number, default: 0 })
+  crawlCategoryIdx!: number;
+
+  /**
    * Nhóm crawler mà account này thuộc về. null = chưa gán nhóm.
    * default: null để các doc cũ load được mà không cần migration ngay.
    * Phase 3 migration sẽ gán tất cả về nhóm Default.
