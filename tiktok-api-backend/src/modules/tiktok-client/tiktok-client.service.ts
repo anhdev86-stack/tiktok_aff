@@ -238,22 +238,25 @@ export class TiktokClientService {
   /**
    * Tìm creator trong 1 crawl session, phân trang bằng CON TRỎ.
    *
-   * PHÂN TRANG: chỉ gửi `{page, size}` — KHÔNG gửi `search_key`/`next_item_cursor`.
+   * PHÂN TRANG BẰNG CON TRỎ — gửi `search_key` + `next_item_cursor` CÙNG NHAU.
    *
-   * Lần đầu triển khai tôi gửi kèm `search_key` lấy từ `next_pagination` của
-   * response trước, vì tưởng TikTok phân trang bằng con trỏ. Kết quả thực đo
-   * (2026-08-04): page 0 trả 12 creator bình thường, nhưng page 1 kèm
-   * `search_key` trả **0 item** và `has_more:false` → crawler tưởng hết pool,
-   * reset cursor=0, mỗi lượt chỉ lấy lại đúng 12 creator của page 0.
+   * Đo thực tế (2026-08-05) chứng minh TikTok **bỏ qua tham số `page`**:
+   * `next_item_cursor` trả về luôn bằng 12 ở MỌI page (11, 12, …, 21, rồi 0, 1,
+   * 2) chứ không tăng 24/36. Tức mỗi request đều được xử lý như "12 item đầu của
+   * một tìm kiếm mới"; `next_page` chỉ echo lại số ta gửi lên.
    *
-   * Gửi thiếu vế còn lại là nguyên nhân: `next_item_cursor` TikTok trả về là
-   * SỐ (`0`), trong khi readNextPagination cũ chỉ nhận `typeof === 'string'` nên
-   * luôn bỏ qua → request có search_key mà không có cursor ⇒ cursor state không
-   * nhất quán ⇒ rỗng.
+   * Hậu quả khi phân trang theo `page`: crawler múc đi múc lại cùng một pool
+   * top. Re-rank ngẫu nhiên khiến mỗi lần bốc ra 12 creator hơi khác (trong 1
+   * lượt vẫn báo "12 mới"), nhưng vét cạn pool là sheet đứng im — đúng hiện
+   * tượng dừng tăng từ 22:40 ngày 04/08 ở mốc 2877 creator.
    *
-   * Cách phân trang theo `page` thuần là cách ĐÃ CHỨNG MINH chạy được (bản gốc
-   * tích luỹ 2465 creator). Con trỏ vẫn được đọc ra và log lại để sau này muốn
-   * dùng thì có dữ liệu thật mà đối chiếu, nhưng KHÔNG gửi lên nữa.
+   * QUY TẮC: gửi CẢ CẶP hoặc KHÔNG GỬI GÌ. Gửi mỗi `search_key` mà thiếu cursor
+   * thì TikTok trả 0 item + has_more=false (đã đo 04/08) — vì cursor mặc định 0
+   * trong khi search_key đó đã tiêu thụ tới 0 rồi.
+   *
+   * Request đầu mỗi lượt không có cặp con trỏ → TikTok trả về search_key +
+   * cursor, từ page sau mới thread được. Xác minh đúng: quan sát
+   * `next_item_cursor` phải TĂNG DẦN 12 → 24 → 36.
    */
   async searchCreatorsInSession(
     session: CrawlSession,
@@ -275,9 +278,19 @@ export class TiktokClientService {
       }));
     }
 
+    const pagination: Record<string, unknown> = { page: p.page, size };
+    // CẶP hoặc KHÔNG — không bao giờ gửi lẻ một vế (xem docblock).
+    if (p.searchKey && p.nextItemCursor != null) {
+      const cursorNum = Number(p.nextItemCursor);
+      if (Number.isFinite(cursorNum)) {
+        pagination.search_key = p.searchKey;
+        pagination.next_item_cursor = cursorNum;
+      }
+    }
+
     const body = JSON.stringify({
       query: '',
-      pagination: { page: p.page, size },
+      pagination,
       algorithm: 1,
       filter_params: filterParams,
     });
@@ -308,9 +321,10 @@ export class TiktokClientService {
     // chuyển sang phân trang bằng cursor thì có sẵn dữ liệu thật đối chiếu —
     // trước đây chỉ log khi 0 item nên không biết page thành công trả gì.
     this.logger.log(
-      `find page=${p.page} → ${base.items.length} items | hasMore=${base.hasMore} ` +
-        `next_page=${cursor.nextPage ?? '-'} next_item_cursor=${cursor.nextItemCursor ?? '-'} ` +
-        `search_key=${cursor.searchKey ? cursor.searchKey.slice(0, 12) + '…' : '-'}`,
+      `find page=${p.page} sentCursor=${pagination.next_item_cursor ?? '-'} → ` +
+        `${base.items.length} items | hasMore=${base.hasMore} ` +
+        `next_item_cursor=${cursor.nextItemCursor ?? '-'} ` +
+        `search_key=${cursor.searchKey ? cursor.searchKey.slice(0, 10) + '…' : '-'}`,
     );
 
     if (base.items.length === 0) {
