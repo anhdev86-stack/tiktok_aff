@@ -45,6 +45,16 @@ import { CrawlerWriteSheets } from './crawler.write-sheets';
  */
 const DEFAULT_PAGES_PER_RUN = 20;
 
+/**
+ * Bật/tắt việc lưu lại cookie do TikTok gia hạn trong lúc crawl.
+ *
+ * Mặc định BẬT — đây là thứ giúp session tự sống lâu thay vì phải dán cookie
+ * lại liên tục. Đặt CRAWLER_COOKIE_WRITEBACK=false để tắt nhanh nếu nghi ngờ
+ * nó gây vấn đề, không cần rollback cả bản deploy.
+ */
+const COOKIE_WRITEBACK =
+  (process.env.CRAWLER_COOKIE_WRITEBACK ?? 'true') !== 'false';
+
 const sleep = (ms: number): Promise<void> =>
   new Promise((r) => setTimeout(r, ms));
 
@@ -201,6 +211,41 @@ export class CrawlerRunOneAccount {
         if (pageDelay > 0) await sleep(pageDelay);
       }
     } finally {
+      // Write-back cookie TRƯỚC khi đóng session — context còn sống mới đọc được
+      // bản TikTok vừa gia hạn (sessionid mới, sid_guard dài hạn hơn, msToken xoay).
+      //
+      // Điều kiện `totalCreators > 0`: chỉ lưu khi lượt này ĐÃ crawl ra data, tức
+      // session chứng minh còn auth được. Nếu session vừa chết mà vẫn lưu, ta lấy
+      // cookie "đã đăng xuất" ghi đè lên cookie tốt — hỏng luôn account.
+      //
+      // Không có bước này thì mọi lần TikTok gia hạn đều bị vứt khi context đóng,
+      // cookie trong DB chỉ già đi tới hạn cứng ⇒ phải dán lại cookie liên tục.
+      if (totalCreators > 0 && COOKIE_WRITEBACK) {
+        try {
+          const refreshed = await this.tiktok.readRefreshedCookie(session);
+          if (refreshed) {
+            const saved = await this.accounts.refreshCookie(
+              accId,
+              acc.cookie,
+              refreshed.cookie,
+            );
+            this.logger.log(
+              saved
+                ? `[${acc.name}] cookie đã gia hạn (${refreshed.changed.length} cookie đổi: ${refreshed.changed.slice(0, 5).join(', ')}${refreshed.changed.length > 5 ? '…' : ''})`
+                : `[${acc.name}] bỏ qua write-back — cookie trong DB đã đổi (user dán tay?)`,
+            );
+          }
+        } catch (err) {
+          // Gia hạn cookie là tối ưu, không phải chức năng chính: lỗi ở đây
+          // tuyệt đối không được làm hỏng lượt crawl vừa chạy xong.
+          this.logger.warn(
+            `[${acc.name}] write-back cookie lỗi (bỏ qua): ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      }
+
       // Luôn đóng session (kể cả lỗi/stop) để không rò browser process.
       await this.tiktok.closeCrawlSession(session);
     }

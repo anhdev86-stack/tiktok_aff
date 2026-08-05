@@ -18,7 +18,11 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { TiktokSessionManager } from './tiktok-session.manager';
 import type { SignedFetchResult } from './tiktok-browser';
-import { hasLoginSession, parseCookieString } from './cookie.util';
+import {
+  hasLoginSession,
+  mergeCookieString,
+  parseCookieString,
+} from './cookie.util';
 import {
   flattenOverview,
   flattenOverviewFromCard,
@@ -181,6 +185,40 @@ export class TiktokClientService {
       throw e;
     }
     return { ...opts, openedAt: Date.now() };
+  }
+
+  /**
+   * Lấy chuỗi cookie ĐÃ GIA HẠN từ context đang sống, gộp lên cookie gốc.
+   *
+   * Mỗi request TikTok trả Set-Cookie làm mới sessionid / gia hạn sid_guard /
+   * xoay msToken. Browser giữ chúng trong context, nhưng context đóng là mất —
+   * trước đây DB luôn giữ bản cookie cũ nên nó chỉ già đi tới lúc hết hạn cứng,
+   * bắt user dán lại liên tục. Đọc ngược ra rồi lưu lại thì session tự gia hạn
+   * y như trình duyệt thật.
+   *
+   * Trả `null` khi không có gì đáng lưu (không còn context, hoặc không cookie
+   * nào đổi) để caller khỏi ghi DB thừa.
+   */
+  async readRefreshedCookie(
+    session: CrawlSession,
+  ): Promise<{ cookie: string; changed: string[] } | null> {
+    const fresh = await this.sessionManager.readLiveCookies(session);
+    if (fresh.length === 0) return null;
+
+    const { merged, changed } = mergeCookieString(session.cookie, fresh);
+    if (changed.length === 0) return null;
+
+    // Chốt chặn cuối: tuyệt đối không lưu đè bằng chuỗi đã mất token đăng nhập.
+    // Nếu TikTok vừa đăng xuất phiên này, cookie trong context là bản "đã logout"
+    // — ghi đè lên cookie tốt là tự tay phá account.
+    if (!hasLoginSession(parseCookieString(merged))) {
+      this.logger.warn(
+        `Bỏ qua write-back cookie shop=${session.shopId}: bản mới không còn token đăng nhập`,
+      );
+      return null;
+    }
+
+    return { cookie: merged, changed };
   }
 
   /**

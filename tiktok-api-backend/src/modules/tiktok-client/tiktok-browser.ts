@@ -20,6 +20,7 @@ import {
   MISSING_LOGIN_COOKIE_HINT,
   parseCookieString,
   pickCookie,
+  type CookieEntry,
 } from './cookie.util';
 
 puppeteerExtra.use(StealthPlugin());
@@ -418,6 +419,36 @@ export async function signedFetchInPage(
     return { error: `page.evaluate threw: ${(e as Error).message}` };
   } finally {
     page.off('request', handler);
+  }
+}
+
+/**
+ * Đọc cookie HIỆN TẠI trong context — gồm cả bản TikTok vừa làm mới qua
+ * Set-Cookie trong phiên (sessionid, sid_guard gia hạn, msToken xoay…).
+ *
+ * Không đọc lại thì mọi lần gia hạn đều mất khi context đóng, cookie trong DB
+ * chỉ già đi cho tới lúc hết hạn cứng — đó là lý do phải dán cookie lại liên tục.
+ *
+ * Trả mảng rỗng nếu context đã đóng/lỗi: caller coi như "không có gì để cập nhật"
+ * chứ không được để hỏng cả lượt crawl.
+ */
+export async function readContextCookies(
+  session: BrowserSession,
+): Promise<CookieEntry[]> {
+  try {
+    const raw = await session.context.cookies();
+    return raw
+      .filter((c) => typeof c.name === 'string' && c.name !== '')
+      .map((c) => ({
+        name: c.name,
+        value: String(c.value ?? ''),
+        domain: c.domain ?? '.tiktok.com',
+        path: c.path ?? '/',
+        httpOnly: Boolean(c.httpOnly),
+        secure: Boolean(c.secure),
+      }));
+  } catch {
+    return [];
   }
 }
 

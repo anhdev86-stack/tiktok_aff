@@ -82,6 +82,44 @@ export function hasLoginSession(cookies: CookieEntry[]): boolean {
   );
 }
 
+/** Ngược của parseCookieString: CookieEntry[] → "k=v; k=v". */
+export function serializeCookies(cookies: CookieEntry[]): string {
+  return cookies.map((c) => `${c.name}=${c.value}`).join('; ');
+}
+
+/**
+ * Gộp cookie MỚI (browser trả về) đè lên cookie CŨ, giữ lại cookie cũ mà
+ * browser không nhắc tới.
+ *
+ * Vì sao phải merge chứ không thay thẳng: `context.cookies()` chỉ trả cookie
+ * thuộc các domain page đã chạm tới trong phiên. Cookie hợp lệ của domain khác
+ * (hoặc TikTok không gửi lại lượt này) sẽ biến mất nếu ghi đè toàn bộ — mất
+ * đúng những cookie ta đang cần giữ.
+ *
+ * Chỉ nhận giá trị mới khác rỗng: cookie bị xoá thường về "" và ta không muốn
+ * biến một cookie đang tốt thành rỗng.
+ */
+export function mergeCookieString(
+  oldRaw: string,
+  fresh: CookieEntry[],
+): { merged: string; changed: string[] } {
+  const map = new Map<string, string>();
+  for (const c of parseCookieString(oldRaw)) map.set(c.name, c.value);
+
+  const changed: string[] = [];
+  for (const c of fresh) {
+    const v = (c.value ?? '').trim();
+    if (v === '') continue;
+    if (map.get(c.name) !== c.value) changed.push(c.name);
+    map.set(c.name, c.value);
+  }
+
+  const merged = [...map.entries()]
+    .map(([name, value]) => `${name}=${value}`)
+    .join('; ');
+  return { merged, changed };
+}
+
 /**
  * Thông báo hướng dẫn lấy lại cookie đúng cách. Tách riêng để backend, log và
  * UI dùng chung một câu chữ.

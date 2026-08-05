@@ -24,12 +24,13 @@ import {
   closeContextSession,
   openBrowser,
   openContextSession,
+  readContextCookies,
   signedFetchInPage,
   type BrowserSession,
   type SignedFetchInput,
   type SignedFetchResult,
 } from './tiktok-browser';
-import { parseCookieString, pickCookie } from './cookie.util';
+import { parseCookieString, pickCookie, type CookieEntry } from './cookie.util';
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((r) => setTimeout(r, ms));
@@ -164,6 +165,25 @@ export class TiktokSessionManager implements OnApplicationShutdown {
       slot.lastUsedAt = Date.now();
       if (slot.browserSlot) slot.browserSlot.lastUsedAt = Date.now();
     });
+  }
+
+  /**
+   * Đọc cookie hiện tại trong context ĐANG SỐNG của cookie này.
+   *
+   * Trả `[]` khi chưa có context (chưa bootstrap, hoặc đã bị idle sweep đóng) —
+   * caller hiểu là "không có gì mới để lưu", không phải lỗi.
+   *
+   * KHÔNG đi qua `enqueue`: chỉ đọc, không đụng page, nên không cần chờ hàng đợi
+   * request của slot. Chờ ở đây có thể kẹt sau một lượt crawl dài.
+   */
+  async readLiveCookies(req: {
+    cookie: string;
+    shopId: string;
+    shopRegion: string;
+  }): Promise<CookieEntry[]> {
+    const slot = this.slots.get(this.cookieKey(req.cookie));
+    if (!slot?.session) return [];
+    return readContextCookies(slot.session);
   }
 
   /**

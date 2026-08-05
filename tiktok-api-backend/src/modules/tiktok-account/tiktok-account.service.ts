@@ -163,6 +163,35 @@ export class TiktokAccountService {
   }
 
   /**
+   * Lưu cookie đã được TikTok gia hạn trong lúc crawl (write-back).
+   *
+   * Cập nhật CÓ ĐIỀU KIỆN `cookie: expectedOld`: nếu giữa lúc crawl mà user dán
+   * cookie mới qua UI thì `matchedCount = 0` và ta bỏ qua — cookie user dán tay
+   * luôn phải thắng bản tự động, không được ghi đè lên nó.
+   *
+   * Trả true nếu thực sự đã ghi.
+   */
+  async refreshCookie(
+    id: string,
+    expectedOld: string,
+    next: string,
+  ): Promise<boolean> {
+    const r = await this.model
+      .updateOne(
+        { _id: new Types.ObjectId(id), cookie: expectedOld },
+        {
+          $set: {
+            cookie: next,
+            cookieAlive: true,
+            cookieCheckedAt: new Date(),
+          },
+        },
+      )
+      .exec();
+    return r.matchedCount > 0;
+  }
+
+  /**
    * Đánh dấu cookie chết (gọi từ chỗ khác phát hiện auth fail giữa luồng,
    * vd /creators/search bị code != 0). Không gọi lại info_v2 vì đã có bằng
    * chứng từ caller — info_v2 đôi khi nói "alive" trong khi marketplace
