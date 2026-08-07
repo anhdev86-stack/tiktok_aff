@@ -1,0 +1,93 @@
+name: Build & Deploy (Docker Hub → Coolify)
+
+# Mỗi lần push main: build 2 image amd64 native trên runner GitHub, push lên
+# Docker Hub, rồi gọi Coolify redeploy để pull image :latest mới.
+#
+# Secrets cần đặt trong repo (Settings → Secrets and variables → Actions):
+#   DOCKERHUB_USERNAME  — user Docker Hub (vd: anhdev17)
+#   DOCKERHUB_TOKEN     — Docker Hub access token (Account Settings → Personal access tokens)
+#   COOLIFY_TOKEN       — (tuỳ chọn) Coolify API token để tự redeploy.
+#                         Thiếu secret này thì vẫn build+push OK, chỉ cần bấm
+#                         Redeploy tay trong Coolify.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# Huỷ run cũ nếu có push mới liên tiếp.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BACKEND_IMAGE: anhdev17/tiktok-api-backend
+  WEB_IMAGE: anhdev17/tiktok-admin-web
+  # api.bcao.vn được nướng vào bundle web lúc build (VITE_API_URL).
+  WEB_API_URL: https://api.bcao.vn/api/v1
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: backend
+            image: anhdev17/tiktok-api-backend
+            context: .
+            dockerfile: tiktok-api-backend/Dockerfile
+          - name: web
+            image: anhdev17/tiktok-admin-web
+            context: shadcn-admin
+            dockerfile: shadcn-admin/Dockerfile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build & push ${{ matrix.name }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          tags: ${{ matrix.image }}:latest
+          # web cần VITE_API_URL absolute; backend bỏ qua arg thừa này.
+          build-args: |
+            VITE_API_URL=${{ env.WEB_API_URL }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,scope=${{ matrix.name }},mode=max
+
+  redeploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Coolify redeploy
+        env:
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+        run: |
+          if [ -z "$COOLIFY_TOKEN" ]; then
+            echo "::warning::COOLIFY_TOKEN chưa đặt — bỏ qua auto-redeploy. Hãy bấm Redeploy tay trong Coolify để pull image mới."
+            exit 0
+          fi
+          # UUID 2 app trong environment tiktok (lấy từ URL Coolify).
+          for uuid in o0o80ckokkokogkggkk8wcwk uwg8ccc40wwkgcwsowkg408c; do
+            echo "Redeploy $uuid ..."
+            code=$(curl -s -o /tmp/resp -w '%{http_code}' \
+              -X GET "https://dashboard.infitech.vn/api/v1/deploy?uuid=$uuid&force=true" \
+              -H "Authorization: Bearer $COOLIFY_TOKEN")
+            echo "HTTP $code"; cat /tmp/resp; echo
+            if [ "$code" -ge 400 ]; then
+              echo "::error::Coolify redeploy $uuid trả $code"; exit 1
+            fi
+          done

@@ -2,5 +2,7 @@
 # .env.production, api-test/ chứa cookie sống, docs/, plans/, build scripts...).
 /*
 !/.gitignore
+!/.github
+!/.dockerignore
 !/tiktok-api-backend
 !/shadcn-admin
