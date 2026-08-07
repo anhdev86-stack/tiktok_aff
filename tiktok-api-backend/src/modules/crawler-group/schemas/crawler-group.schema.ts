@@ -14,6 +14,18 @@ export class CrawlerGroup {
   @Prop({ required: true, unique: true, index: true })
   name!: string;
 
+  /**
+   * Thị trường của group (khớp với `shopRegion` của TiktokAccount, vd "VN",
+   * "MY", "PH", "TH"). '' = chưa gán thị trường.
+   *
+   * Đây là NGUỒN SỰ THẬT để migration gán account vào ĐÚNG group theo thị trường
+   * (account.shopRegion === group.region), thay cho hành vi cũ "dồn mọi account
+   * mồ côi/stale về group tạo sớm nhất" — chính là lý do creator MY/PH/TH lẫn
+   * vào sheet VN. So khớp không phân biệt hoa/thường + trim.
+   */
+  @Prop({ default: '' })
+  region!: string;
+
   // ─── Sheet config (per-group) ─────────────────────────────────────────────
 
   @Prop({ default: '' })

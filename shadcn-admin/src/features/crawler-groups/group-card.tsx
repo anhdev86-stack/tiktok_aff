@@ -46,6 +46,15 @@ export function GroupCard({ group, onEdit, onManageAccounts, onDelete }: Props) 
             {group.name}
           </h3>
           <div className='flex shrink-0 gap-1'>
+            {group.region ? (
+              <Badge variant='outline' className='text-xs font-mono'>
+                {group.region}
+              </Badge>
+            ) : (
+              <Badge variant='destructive' className='text-xs'>
+                Chưa gán TT
+              </Badge>
+            )}
             <Badge
               variant={group.enabled ? 'default' : 'secondary'}
               className='text-xs'

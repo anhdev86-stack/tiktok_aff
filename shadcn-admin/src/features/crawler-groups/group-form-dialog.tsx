@@ -33,6 +33,7 @@ interface Props {
 
 type FormState = {
   name: string
+  region: string
   spreadsheetId: string
   sheetOverview: string
   sheetTopVideos: string
@@ -41,6 +42,7 @@ type FormState = {
 
 const DEFAULTS: FormState = {
   name: '',
+  region: '',
   spreadsheetId: '',
   sheetOverview: 'Tổng quan',
   sheetTopVideos: 'Video nổi bật',
@@ -65,6 +67,7 @@ export function GroupFormDialog({ open, onOpenChange, group, onSuccess }: Props)
       group
         ? {
             name: group.name,
+            region: group.region ?? '',
             spreadsheetId: group.spreadsheetId ?? '',
             sheetOverview: group.sheetOverview || 'Tổng quan',
             sheetTopVideos: group.sheetTopVideos || 'Video nổi bật',
@@ -107,6 +110,7 @@ export function GroupFormDialog({ open, onOpenChange, group, onSuccess }: Props)
     if (!valid) return
     const payload: CreateCrawlerGroupInput = {
       name: form.name.trim(),
+      region: form.region.trim().toUpperCase(),
       spreadsheetId: form.spreadsheetId.trim() || undefined,
       sheetOverview: form.sheetOverview.trim() || 'Tổng quan',
       sheetTopVideos: form.sheetTopVideos.trim() || 'Video nổi bật',
@@ -143,6 +147,21 @@ export function GroupFormDialog({ open, onOpenChange, group, onSuccess }: Props)
               onChange={(e) => set('name', e.target.value)}
               placeholder='Nhóm chính, Nhóm phụ...'
             />
+          </div>
+
+          <div className='grid gap-1.5'>
+            <Label htmlFor='cg-region'>Thị trường</Label>
+            <Input
+              id='cg-region'
+              value={form.region}
+              onChange={(e) => set('region', e.target.value)}
+              placeholder='VN, MY, PH, TH...'
+            />
+            <p className='text-xs text-muted-foreground'>
+              Khớp với <strong>Region</strong> của account (shopRegion). Account
+              cùng thị trường sẽ được gán tự động vào nhóm này. Mỗi thị trường
+              chỉ nên có <strong>1 nhóm</strong>.
+            </p>
           </div>
 
           <div className='grid gap-1.5'>

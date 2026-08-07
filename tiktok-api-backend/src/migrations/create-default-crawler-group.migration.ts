@@ -48,9 +48,11 @@ export class CreateDefaultCrawlerGroupMigration implements OnModuleInit {
       if (groupCount === 0) {
         await this.createDefaultFromLegacySettings();
       } else {
-        // Always run both checks: null groupId + stale groupId (refs deleted group)
-        await this.assignOrphanAccountsToFirstGroup();
-        await this.reassignStaleGroupIdAccounts();
+        // Gán account vào ĐÚNG group theo thị trường (shopRegion === region).
+        // Thay cho hành vi cũ "dồn mọi account mồ côi/stale về group tạo sớm
+        // nhất" — chính là lý do creator MY/PH/TH lẫn vào sheet VN. Pass này
+        // cũng TỰ CHỮA account đang bị gán sai group (kéo về đúng thị trường).
+        await this.reconcileAccountsByRegion();
       }
 
       await this.unsetDeprecatedAppSettingsFields();
@@ -94,33 +96,113 @@ export class CreateDefaultCrawlerGroupMigration implements OnModuleInit {
     );
   }
 
+  /** Chuẩn hoá region để so khớp: trim + upper. '' nếu rỗng. */
+  private normRegion(r: unknown): string {
+    return typeof r === 'string' ? r.trim().toUpperCase() : '';
+  }
+
   /**
-   * Groups already exist → ensure no orphaned accounts remain.
-   * Assigns orphans to the earliest-created group as fallback.
+   * Gán MỌI account vào group đúng thị trường của nó (account.shopRegion khớp
+   * group.region, không phân biệt hoa/thường). Đây là bản thay thế cho lối cũ
+   * "dồn account mồ côi/stale về group tạo sớm nhất" — thứ đã trộn creator
+   * MY/PH/TH vào sheet VN. Xử lý gọn cả 3 trường hợp trong một pass:
+   *
+   *   - mồ côi   (groupId null)            → gán vào group cùng region
+   *   - stale    (groupId trỏ group đã xoá) → gán lại vào group cùng region
+   *   - gán sai  (đang ở group khác region) → KÉO về group cùng region
+   *
+   * NGUYÊN TẮC AN TOÀN: chỉ DI CHUYỂN account khi tồn tại DUY NHẤT một group
+   * cùng region. Nếu region chưa cấu hình (không group nào match) hoặc bị nhập
+   * trùng cho ≥2 group (nhập nhằng) → KHÔNG đụng account đang ở group hợp lệ,
+   * chỉ cảnh báo log. Nhờ vậy, deploy code này khi các group CHƯA set region là
+   * gần như no-op (trừ việc thôi dồn account mồ côi vào VN) — an toàn tuyệt đối.
    */
-  private async assignOrphanAccountsToFirstGroup(): Promise<void> {
-    const orphanCount = await this.accModel.countDocuments({
-      $or: [{ groupId: { $exists: false } }, { groupId: null }],
-    });
+  private async reconcileAccountsByRegion(): Promise<void> {
+    const groups = await this.groupModel
+      .find({}, { _id: 1, name: 1, region: 1 })
+      .lean();
 
-    if (orphanCount === 0) return;
-
-    const fallback = await this.groupModel.findOne().sort({ createdAt: 1 });
-    if (!fallback) {
-      this.logger.warn(
-        `Migration: ${orphanCount} orphan accounts found but no groups exist — skipping assignment. Re-create a group and restart.`,
-      );
-      return;
+    // region (normalized) → danh sách group. >1 phần tử = nhập nhằng, bỏ qua.
+    const byRegion = new Map<string, Array<{ _id: unknown; name: string }>>();
+    for (const g of groups) {
+      const key = this.normRegion(g.region);
+      if (!key) continue; // group chưa gán region → không dùng để match
+      const arr = byRegion.get(key) ?? [];
+      arr.push({ _id: g._id, name: g.name });
+      byRegion.set(key, arr);
     }
 
-    const result = await this.accModel.updateMany(
-      { $or: [{ groupId: { $exists: false } }, { groupId: null }] },
-      { $set: { groupId: fallback._id } },
-    );
+    const validGroupIds = new Set(groups.map((g) => String(g._id)));
 
-    this.logger.log(
-      `Migration: assigned ${result.modifiedCount} orphan accounts to group "${fallback.name}" (${fallback._id})`,
-    );
+    const accounts = await this.accModel
+      .find({}, { _id: 1, name: 1, shopRegion: 1, groupId: 1 })
+      .lean();
+
+    let moved = 0;
+    let orphanedNoMatch = 0;
+    const ambiguousRegions = new Set<string>();
+
+    for (const acc of accounts) {
+      const key = this.normRegion(acc.shopRegion);
+      const matches = key ? byRegion.get(key) : undefined;
+      const currentGroupId = acc.groupId ? String(acc.groupId) : null;
+      const isStale =
+        currentGroupId != null && !validGroupIds.has(currentGroupId);
+      const isOrphan = currentGroupId == null;
+
+      if (matches && matches.length === 1) {
+        const target = matches[0];
+        if (currentGroupId !== String(target._id)) {
+          await this.accModel.updateOne(
+            { _id: acc._id },
+            { $set: { groupId: target._id } },
+          );
+          moved++;
+          this.logger.log(
+            `Migration: account "${acc.name}" (region=${acc.shopRegion}) → group "${target.name}"` +
+              (isOrphan
+                ? ' [mồ côi]'
+                : isStale
+                  ? ' [stale]'
+                  : ' [gán sai thị trường]'),
+          );
+        }
+        continue;
+      }
+
+      if (matches && matches.length > 1) {
+        ambiguousRegions.add(key);
+      }
+
+      // Không có group đúng region (hoặc nhập nhằng): chỉ dọn account mồ
+      // côi/stale về null cho sạch UI; KHÔNG đụng account đang ở group hợp lệ.
+      if (isOrphan || isStale) {
+        if (isStale) {
+          await this.accModel.updateOne(
+            { _id: acc._id },
+            { $set: { groupId: null } },
+          );
+        }
+        orphanedNoMatch++;
+      }
+    }
+
+    if (moved > 0) {
+      this.logger.log(`Migration: đã gán lại ${moved} account theo thị trường`);
+    }
+    if (orphanedNoMatch > 0) {
+      this.logger.warn(
+        `Migration: ${orphanedNoMatch} account chưa có group đúng thị trường ` +
+          `(shopRegion không khớp region group nào) — hãy tạo/gán region cho ` +
+          `group tương ứng rồi restart, hoặc gán tay trong UI`,
+      );
+    }
+    if (ambiguousRegions.size > 0) {
+      this.logger.warn(
+        `Migration: các thị trường bị gán cho >1 group (nhập nhằng, đã bỏ qua): ` +
+          `${[...ambiguousRegions].join(', ')} — mỗi thị trường chỉ nên có 1 group`,
+      );
+    }
   }
 
   /**
@@ -160,34 +242,6 @@ export class CreateDefaultCrawlerGroupMigration implements OnModuleInit {
       `Migration: cast ${converted} account.groupId từ string → ObjectId` +
         (skipped > 0 ? ` (bỏ qua ${skipped} string không hợp lệ)` : ''),
     );
-  }
-
-  /**
-   * Accounts whose groupId references a group that no longer exists in the DB
-   * are invisible to all GroupWorkers but NOT counted as orphans (groupId != null).
-   * Reassign them to the earliest group.
-   */
-  private async reassignStaleGroupIdAccounts(): Promise<void> {
-    const validGroupIds = await this.groupModel.distinct('_id');
-    const fallback = await this.groupModel.findOne().sort({ createdAt: 1 });
-    if (!fallback) return;
-
-    const result = await this.accModel.updateMany(
-      {
-        groupId: {
-          $exists: true,
-          $ne: null,
-          $nin: validGroupIds,
-        },
-      },
-      { $set: { groupId: fallback._id } },
-    );
-
-    if (result.modifiedCount > 0) {
-      this.logger.log(
-        `Migration: reassigned ${result.modifiedCount} accounts with stale groupId → group "${fallback.name}" (${fallback._id})`,
-      );
-    }
   }
 
   /**

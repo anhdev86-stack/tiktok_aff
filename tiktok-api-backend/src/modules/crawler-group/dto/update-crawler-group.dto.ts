@@ -14,6 +14,11 @@ export class UpdateCrawlerGroupDto {
   @MinLength(1)
   name?: string;
 
+  /** Thị trường (khớp shopRegion account): "VN", "MY", "PH", "TH"... */
+  @IsOptional()
+  @IsString()
+  region?: string;
+
   @IsOptional()
   @IsString()
   spreadsheetId?: string;

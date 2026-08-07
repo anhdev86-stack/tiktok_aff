@@ -123,6 +123,8 @@ export interface MarketplaceOptions {
 export interface CrawlerGroup {
   _id: string
   name: string
+  /** Thị trường (khớp shopRegion account): "VN", "MY", "PH", "TH"... '' = chưa gán. */
+  region: string
   spreadsheetId: string
   sheetOverview: string
   sheetTopVideos: string
@@ -141,6 +143,7 @@ export interface CrawlerGroup {
 
 export interface CreateCrawlerGroupInput {
   name: string
+  region?: string
   spreadsheetId?: string
   sheetOverview?: string
   sheetTopVideos?: string
