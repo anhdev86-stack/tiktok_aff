@@ -1,0 +1,89 @@
+# Standalone deploy — BIỆT LẬP, truy cập qua IP:PORT, KHÔNG domain, KHÔNG Traefik.
+# Dùng được trên VPS đã có app khác mà không đụng tới chúng:
+#   - project name riêng "tiktokaff" → network + volume riêng (không trộn app khác).
+#   - CHỈ publish 1 cổng host (WEB_PORT, mặc định 8081) cho web.
+#     api + mongo nằm trong network nội bộ, KHÔNG mở ra ngoài.
+#   - web (nginx.local.conf) tự reverse-proxy /api/ → api:3000 cùng network →
+#     FE gọi same-origin /api/v1, KHÔNG cần CORS, KHÔNG cần domain.
+#
+# Chạy:
+#   docker compose -f docker-compose.standalone.yml up -d --build
+#   (project name "tiktokaff" đã đặt sẵn ở field name bên dưới)
+name: tiktokaff
+
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    command: ["--bind_ip_all", "--auth"]
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: "${MONGO_ROOT_USERNAME:-root}"
+      MONGO_INITDB_ROOT_PASSWORD: "${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD is required}"
+      MONGO_INITDB_DATABASE: "${MONGO_DB:-tiktok_api}"
+    # KHÔNG publish port — chỉ truy cập nội bộ trong network tiktokaff.
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test:
+        - "CMD"
+        - "mongosh"
+        - "--quiet"
+        - "-u"
+        - "${MONGO_ROOT_USERNAME:-root}"
+        - "-p"
+        - "${MONGO_ROOT_PASSWORD}"
+        - "--authenticationDatabase"
+        - "admin"
+        - "--eval"
+        - "db.runCommand({ ping: 1 }).ok"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ..
+      dockerfile: tiktok-api-backend/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOST: "0.0.0.0"
+      GLOBAL_PREFIX: "api/v1"
+      MONGO_URI: "mongodb://${MONGO_ROOT_USERNAME:-root}:${MONGO_ROOT_PASSWORD}@mongo:27017/${MONGO_DB:-tiktok_api}?authSource=admin"
+      MONGO_DB: "${MONGO_DB:-tiktok_api}"
+      ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
+      ADMIN_PASSWORD_HASH: "${ADMIN_PASSWORD_HASH:-}"
+      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET is required (>=32 chars)}"
+      JWT_EXPIRES_IN: "${JWT_EXPIRES_IN:-12h}"
+      ENCRYPTION_KEY: "${ENCRYPTION_KEY:?ENCRYPTION_KEY is required (64 hex chars)}"
+      # FE gọi same-origin qua nginx proxy → origin là chính web. Cho phép luôn.
+      CORS_ORIGINS: "${CORS_ORIGINS:-}"
+      RATE_LIMIT_GLOBAL: "${RATE_LIMIT_GLOBAL:-100}"
+      RATE_LIMIT_LOGIN: "${RATE_LIMIT_LOGIN:-5}"
+      PUPPETEER_HEADLESS: "true"
+      TIKTOK_DEFAULT_DELAY_MS: "${TIKTOK_DEFAULT_DELAY_MS:-1000}"
+    # KHÔNG publish port — web proxy nội bộ tới api:3000.
+
+  web:
+    build:
+      context: ../shadcn-admin
+      dockerfile: Dockerfile
+      args:
+        # Bundle gọi /api/v1 (relative) → nginx.local.conf proxy sang api:3000.
+        VITE_API_URL: "/api/v1"
+        NGINX_CONF: "nginx.local.conf"
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+    ports:
+      # Chỉ cổng này mở ra ngoài. Truy cập: http://<IP_VPS>:${WEB_PORT}
+      - "${WEB_PORT:-8081}:8080"
+
+volumes:
+  mongo_data:
