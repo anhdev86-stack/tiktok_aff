@@ -117,6 +117,41 @@ async function waitForFrontierSign(
 }
 
 /**
+ * Poll tới khi bundle affiliate ĐÃ PATCH `window.fetch`.
+ *
+ * VÌ SAO CẦN (fix B — sign rejected code:100000): endpoint `/marketplace/*` chỉ
+ * chấp nhận request nếu đi qua fetch đã bị bundle wrap để chèn X-Bogus v1 +
+ * X-Gnarly + msToken tươi (xem docs/tiktok-signing-notes.md). `frontierSign`
+ * sẵn sàng KHÔNG bảo đảm fetch đã bị patch — bắn sớm là dính 100000. Bản cũ chờ
+ * mù `sleep(4500)`, gặp lúc bundle load chậm/đổi là hỏng hàng loạt.
+ *
+ * Heuristic: fetch gốc của trình duyệt có `toString()` chứa `[native code]`.
+ * Bundle patch xong thì fetch là hàm JS wrapper → KHÔNG còn `[native code]`.
+ *
+ * Trả ms đã chờ, -1 nếu quá hạn (caller vẫn thử bắn — patcher có thể cài trễ
+ * hoặc TikTok đã đổi cơ chế; lượt fetch sẽ tự lộ qua code 100000 + log wire).
+ */
+async function waitForFetchPatch(
+  page: Page,
+  timeoutMs: number,
+): Promise<number> {
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeoutMs) {
+    const patched = await page.evaluate(() => {
+      try {
+        const src = Function.prototype.toString.call(window.fetch);
+        return !src.includes('[native code]');
+      } catch {
+        return false;
+      }
+    });
+    if (patched) return Date.now() - t0;
+    await sleep(150);
+  }
+  return -1;
+}
+
+/**
  * Mở 1 Chrome dùng chung cho NHIỀU context. Cờ launch cắt hết thứ không cần
  * (background networking, extension, sync…) để giảm RAM khi chạy nhiều tab.
  */
@@ -240,7 +275,23 @@ export async function openContextSession(
         `byted_acrawler.frontierSign not ready in 15s after goto (url=${landedUrl})`,
       );
     }
-    await sleep(4500);
+
+    // Fix B: chờ bundle patch xong `window.fetch` rồi mới cho phép ký/bắn.
+    // SDK còn init tiếp (mssdk-sg) sau khi frontierSign xuất hiện; giữ 1 khoảng
+    // settle tối thiểu rồi poll patcher tối đa ~12s.
+    await sleep(1500);
+    const patchWaited = await waitForFetchPatch(page, 12_000);
+    if (patchWaited < 0) {
+      // KHÔNG throw: patcher có thể cài trễ, hoặc TikTok đổi cơ chế. Cứ để lượt
+      // fetch chạy — nếu thật sự thiếu patch thì trả code 100000 và session
+      // manager sẽ re-bootstrap + retry (fix A), log wire X-Gnarly lộ nguyên nhân.
+      logger.warn(
+        `Fetch chưa bị patch sau 12s (shop=${opts.shopId}) — bundle affiliate ` +
+          `load chậm hoặc TikTok đổi cơ chế ký. Vẫn thử bắn; theo dõi code 100000 + wire.X-Gnarly.`,
+      );
+    } else {
+      logger.debug?.(`fetch patched in ${patchWaited}ms after frontierSign`);
+    }
 
     const baseQuery = buildBaseQuery({
       shopId: opts.shopId,
@@ -309,6 +360,26 @@ export async function signedFetchInPage(
         return {
           error: 'byted_acrawler missing on page: ' + JSON.stringify(diag),
         };
+      }
+
+      // Fix B: bảo đảm bundle affiliate ĐÃ patch `window.fetch` trước khi bắn.
+      // Context tái dùng trong pool có thể bị mất patch (điều hướng, GC…); chờ
+      // ngắn tại chỗ rẻ hơn re-bootstrap cả context. Fetch gốc có `[native code]`
+      // trong toString; patcher wrap xong thì không còn.
+      const isFetchPatched = (): boolean => {
+        try {
+          return !Function.prototype.toString
+            .call(window.fetch)
+            .includes('[native code]');
+        } catch {
+          return false;
+        }
+      };
+      if (!isFetchPatched()) {
+        const deadline = Date.now() + 8000;
+        while (Date.now() < deadline && !isFetchPatched()) {
+          await new Promise((r) => setTimeout(r, 150));
+        }
       }
 
       let signed: string | Record<string, string>;
@@ -401,12 +472,26 @@ export async function signedFetchInPage(
     const msTokenMatch = input.baseQuery.match(/msToken=([^&]+)/);
     const msTokenTail = msTokenMatch ? msTokenMatch[1].slice(-12) : 'NONE';
 
+    // Verdict chẩn đoán khi TikTok từ chối chữ ký (code 100000): tách rõ 2 case
+    // để khỏi đoán mò khi đọc log.
+    //   - wire KHÔNG có X-Gnarly  → patcher CHƯA chạy (fix A/B của ta xử lý:
+    //     re-bootstrap + chờ patcher). Đây là case thường gặp.
+    //   - wire ĐÃ có X-Gnarly mà vẫn 100000 → chữ ký đã đủ hình thức nhưng
+    //     TikTok vẫn reject → khả năng đổi thuật toán X-Gnarly, CẦN reverse lại
+    //     bundle mới (ngoài phạm vi vá timing).
+    let verdict = '';
+    if ((result.body ?? '').includes('"code":100000')) {
+      verdict = wireHasGnarly
+        ? ' VERDICT=sign_rejected_dù_có_Gnarly(TikTok có thể đổi thuật toán → cần reverse bundle)'
+        : ' VERDICT=fetch_chưa_patch(chờ patcher/re-bootstrap sẽ cứu)';
+    }
+
     console.log(
       `[signedFetch] apiPath=${input.apiPath} signedShape=${result.signedShape ?? '?'} ` +
         `manual.X-Bogus=${manualHasBogus} manual.X-Gnarly=${manualHasGnarly} ` +
         `wire.X-Bogus=${wireHasBogus} wire.X-Gnarly=${wireHasGnarly} ` +
         `msToken=...${msTokenTail} ` +
-        `status=${result.status} bodyHead=${(result.body ?? '').slice(0, 120)}`,
+        `status=${result.status} bodyHead=${(result.body ?? '').slice(0, 120)}${verdict}`,
     );
 
     return {

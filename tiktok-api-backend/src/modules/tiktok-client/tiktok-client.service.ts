@@ -68,6 +68,39 @@ export class TiktokSessionDeadError extends Error {
   }
 }
 
+/**
+ * TikTok trả `code:100000` trên endpoint `/marketplace/*` — chữ ký/wire
+ * fingerprint bị từ chối (page chưa patch xong `window.fetch` để chèn X-Gnarly),
+ * KHÔNG phải cookie chết. Xem docs/tiktok-signing-notes.md (probe 2026-04-26):
+ * cookie hoàn toàn hợp lệ vẫn ra 100000 khi sign chưa đủ.
+ *
+ * PHÂN BIỆT với TiktokSearchAuthError: đây là lỗi PIPELINE (re-bootstrap +
+ * retry rồi thử lại lượt sau), TUYỆT ĐỐI không markCookieDead — nếu không, một
+ * sự cố ký request (TikTok đổi bundle / page init chậm) sẽ giết sạch mọi cookie
+ * tốt cùng lúc. Cookie chết thật bị bắt sớm hơn ở bootstrap (redirect →
+ * TiktokSessionDeadError "cookie chưa đăng nhập").
+ */
+export class TiktokSignRejectedError extends Error {
+  constructor(
+    public readonly code: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'TiktokSignRejectedError';
+  }
+}
+
+/**
+ * Các code TikTok trả khi CHỮ KÝ bị từ chối (không phải cookie chết). `100000`
+ * là code đã probe cho `/marketplace/*`. Để tách riêng thành hằng số để sau này
+ * gặp code sign-layer khác thì bổ sung 1 chỗ.
+ */
+const SIGN_REJECTED_CODES = new Set<number>([100000]);
+
+export function isSignRejectedCode(code?: number): boolean {
+  return typeof code === 'number' && SIGN_REJECTED_CODES.has(code);
+}
+
 export interface SearchCreatorItem {
   oec_id: string;
   handle: string | null;
@@ -495,6 +528,12 @@ export class TiktokClientService {
       message?: string;
       options?: Record<string, { option_list?: unknown[] }>;
     };
+    if (isSignRejectedCode(root.code)) {
+      throw new TiktokSignRejectedError(
+        root.code as number,
+        root.message ?? `tiktok_sign_rejected_${root.code}`,
+      );
+    }
     if (root.code !== 0) {
       throw new TiktokSearchAuthError(
         root.code ?? -1,
@@ -540,7 +579,7 @@ export class TiktokClientService {
     cookie: string;
     shopId: string;
     shopRegion: string;
-  }): Promise<{ alive: boolean; message: string }> {
+  }): Promise<{ alive: boolean; message: string; retryable?: boolean }> {
     const refererUrl = this.creatorRefererUrl(opts);
     const body = JSON.stringify({
       query: '',
@@ -602,6 +641,15 @@ export class TiktokClientService {
     const code = parsed?.code;
     const message = parsed?.message ?? '';
     if (code === 0) return { alive: true, message: 'ok' };
+    if (isSignRejectedCode(code)) {
+      // Chữ ký bị từ chối — pipeline lỗi, KHÔNG kết luận cookie chết. `retryable`
+      // để caller (account.service) GIỮ NGUYÊN trạng thái cookie thay vì set dead.
+      return {
+        alive: false,
+        retryable: true,
+        message: `sign_rejected_${code} (lỗi ký request, không phải cookie chết — thử lại lượt sau)`,
+      };
+    }
     return {
       alive: false,
       message: `code_${code ?? 'unknown'}${message ? `:${message.slice(0, 80)}` : ''}`,
@@ -893,6 +941,13 @@ function mapSearchResponse(
   };
 
   const code = root?.code;
+  if (isSignRejectedCode(code)) {
+    // Sign/wire bị từ chối — pipeline lỗi, KHÔNG phải cookie chết.
+    throw new TiktokSignRejectedError(
+      code as number,
+      root?.message ?? `tiktok_sign_rejected_${code}`,
+    );
+  }
   if (typeof code === 'number' && code !== 0) {
     throw new TiktokSearchAuthError(
       code,

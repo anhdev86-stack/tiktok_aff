@@ -20,6 +20,7 @@ import {
   TiktokClientService,
   TiktokSearchAuthError,
   TiktokSessionDeadError,
+  TiktokSignRejectedError,
   type MarketplaceOptionsResult,
 } from '../tiktok-client/tiktok-client.service';
 
@@ -230,7 +231,12 @@ export class TiktokAccountService {
       shopId: acc.shopId,
       shopRegion: acc.shopRegion,
     });
-    acc.cookieAlive = r.alive;
+    // `retryable` = lỗi ký request (code 100000), KHÔNG phải cookie chết. GIỮ
+    // NGUYÊN cookieAlive (đừng lật sang false) để không giết oan cookie tốt khi
+    // pipeline ký đang trục trặc — chỉ ghi lại message + thời điểm check.
+    if (!r.retryable) {
+      acc.cookieAlive = r.alive;
+    }
     acc.cookieCheckedAt = new Date();
     acc.cookieCheckMessage = r.message;
     await acc.save();
@@ -256,6 +262,23 @@ export class TiktokAccountService {
     }
     if (acc.cookieAlive === null) {
       const fresh = await this.checkCookie(accountId);
+      // Lỗi ký request (code 100000) giữ cookieAlive=null + message `sign_rejected_`
+      // → KHÔNG kết luận "hết hạn". Báo lỗi tạm thời để user/crawler thử lại.
+      const signRejected = (fresh.cookieCheckMessage ?? '').startsWith(
+        'sign_rejected_',
+      );
+      if (signRejected) {
+        throw new ConflictException({
+          code: 'SIGN_REJECTED',
+          message:
+            'TikTok từ chối chữ ký request (không phải cookie chết) — thử lại sau ít phút. ' +
+            'Nếu lặp lại liên tục, có thể TikTok đã đổi bundle ký.',
+          accountId: String(fresh._id),
+          accountName: fresh.name,
+          cookieCheckedAt: fresh.cookieCheckedAt,
+          cookieCheckMessage: fresh.cookieCheckMessage,
+        });
+      }
       if (!fresh.cookieAlive) {
         throw new ConflictException({
           code: COOKIE_EXPIRED_CODE,
@@ -312,6 +335,13 @@ export class TiktokAccountService {
           shopRegion: acc.shopRegion,
         });
       } catch (err) {
+        // Lỗi ký request (code 100000): KHÔNG phải account có vấn đề → thử
+        // account kế, KHÔNG markCookieDead. Nếu mọi account đều sign-rejected
+        // thì đây là sự cố pipeline ký chung, không phải cookie chết.
+        if (err instanceof TiktokSignRejectedError) {
+          lastReason = `sign_rejected_${err.code}`;
+          continue;
+        }
         // Chỉ loại + chuyển account với 2 loại lỗi "account có vấn đề".
         // Lỗi khác (network tạm thời, bug code) → bubble lên, không mark dead.
         if (

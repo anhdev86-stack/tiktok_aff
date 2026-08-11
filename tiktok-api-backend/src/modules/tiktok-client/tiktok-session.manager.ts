@@ -46,6 +46,29 @@ const IDLE_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 const BROKEN_SDK_PATTERN =
   /byted_acrawler missing|Cannot read propert(?:y|ies) of undefined \(reading 'frontierSign'\)|frontierSign is not a function|Target closed|Session closed|TargetCloseError|Execution context was destroyed|detached Frame|Protocol error|Runtime\.callFunctionOn timed out/i;
 
+/**
+ * Code TikTok trả khi CHỮ KÝ bị từ chối (page chưa patch xong window.fetch để
+ * chèn X-Gnarly) — xem docs/tiktok-signing-notes.md. Đây KHÔNG phải cookie chết:
+ * một page mới bootstrap (patcher đã cài) thường ký lại đúng → code 0. Vì vậy
+ * gặp code này thì DỰNG LẠI context rồi thử lượt 2, thay vì trả lỗi để caller
+ * giết cookie.
+ *
+ * (Đồng bộ với SIGN_REJECTED_CODES trong tiktok-client.service — không import
+ * chéo để tránh phụ thuộc vòng giữa manager ↔ service.)
+ */
+const SIGN_REJECTED_CODES = new Set<number>([100000]);
+
+/** Body có phải phản hồi "chữ ký bị từ chối" không (best-effort parse JSON). */
+function isSignRejectedBody(body?: string): boolean {
+  if (!body) return false;
+  try {
+    const code = (JSON.parse(body) as { code?: number })?.code;
+    return typeof code === 'number' && SIGN_REJECTED_CODES.has(code);
+  } catch {
+    return false;
+  }
+}
+
 const DEFAULT_MAX_BROWSERS = 20;
 const DEFAULT_MAX_CTX_PER_BROWSER = 50;
 
@@ -279,13 +302,22 @@ export class TiktokSessionManager implements OnApplicationShutdown {
       if (slot.browserSlot) slot.browserSlot.lastUsedAt = Date.now();
 
       const res = await signedFetchInPage(session.page, input);
-      if (!res.error || !BROKEN_SDK_PATTERN.test(res.error)) {
+      // Dựng lại context khi: (a) SDK/page hỏng, HOẶC (b) TikTok trả code báo
+      // chữ ký bị từ chối (page chưa patch xong fetch) — cả hai đều được cứu
+      // bằng một page mới, KHÔNG phải cookie chết.
+      const brokenSdk = !!res.error && BROKEN_SDK_PATTERN.test(res.error);
+      const signRejected = !res.error && isSignRejectedBody(res.body);
+      if (!brokenSdk && !signRejected) {
         return res;
       }
 
+      const reason = brokenSdk
+        ? res.error?.slice(0, 200)
+        : `sign rejected (code ${SIGN_REJECTED_CODES.size ? [...SIGN_REJECTED_CODES].join('/') : '?'})`;
+
       if (attempt === 1) {
         this.logger.warn(
-          `Session shop=${slot.shopId} broken (${res.error.slice(0, 200)}), invalidating + re-bootstrapping`,
+          `Session shop=${slot.shopId} cần dựng lại (${reason}), invalidating + re-bootstrapping`,
         );
         const old = slot.session;
         const oldBrowser = slot.browserSlot;
@@ -300,7 +332,8 @@ export class TiktokSessionManager implements OnApplicationShutdown {
         }
       } else {
         this.logger.error(
-          `Session shop=${slot.shopId} broken AGAIN sau re-bootstrap (${res.error.slice(0, 200)}). Account/cookie có thể cần refresh.`,
+          `Session shop=${slot.shopId} vẫn lỗi sau re-bootstrap (${reason}). ` +
+            `Nếu là sign rejected: có thể TikTok đổi bundle ký — KHÔNG phải cookie chết.`,
         );
         return res;
       }

@@ -22,6 +22,7 @@ import {
   TiktokClientService,
   TiktokSearchAuthError,
   TiktokSessionDeadError,
+  TiktokSignRejectedError,
 } from '../tiktok-client/tiktok-client.service';
 
 interface AuthedRequest extends FastifyRequest {
@@ -138,6 +139,17 @@ export class TiktokAccountController {
         shopRegion: account.shopRegion,
       });
     } catch (err) {
+      // Lỗi ký request (code 100000) — KHÔNG giết cookie, báo lỗi tạm thời.
+      if (err instanceof TiktokSignRejectedError) {
+        throw new ConflictException({
+          code: 'SIGN_REJECTED',
+          message:
+            'TikTok từ chối chữ ký request (không phải cookie chết) — thử lại sau ít phút.',
+          accountId: String(account._id),
+          accountName: account.name,
+          cookieCheckMessage: `sign_rejected_${err.code}`,
+        });
+      }
       if (
         err instanceof TiktokSearchAuthError ||
         err instanceof TiktokSessionDeadError

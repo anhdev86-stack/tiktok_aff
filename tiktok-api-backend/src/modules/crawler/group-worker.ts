@@ -15,7 +15,10 @@ import type { TiktokAccountService } from '../tiktok-account/tiktok-account.serv
 import type { AppSettingsService } from '../app-settings/app-settings.service';
 import type { TiktokAccountDocument } from '../tiktok-account/schemas/tiktok-account.schema';
 import type { CrawlerGroupDocument } from '../crawler-group/schemas/crawler-group.schema';
-import { TiktokSearchAuthError } from '../tiktok-client/tiktok-client.service';
+import {
+  TiktokSearchAuthError,
+  TiktokSignRejectedError,
+} from '../tiktok-client/tiktok-client.service';
 import type { CrawlerRunOneAccount } from './crawler.run-one-account';
 
 const sleep = (ms: number): Promise<void> =>
@@ -345,7 +348,17 @@ export class GroupWorker {
     acc: TiktokAccountDocument,
     err: unknown,
   ): Promise<void> {
-    if (err instanceof TiktokSearchAuthError) {
+    if (err instanceof TiktokSignRejectedError) {
+      // Lỗi ký request (code 100000) — KHÔNG giết cookie. Ghi lastError, bỏ qua
+      // account lượt này, lượt sau thử lại (session manager đã re-bootstrap 1
+      // lần). Giết cookie ở đây là nguyên nhân "vừa thêm cookie đã chết hết".
+      const msg = truncate(
+        `[${acc.name}] TikTok từ chối chữ ký (${err.message}) — bỏ qua lượt này, KHÔNG đánh dấu cookie chết`,
+        1000,
+      );
+      await this.groupService.updateStatus(this.groupId, { lastError: msg });
+      this.logger.warn(msg);
+    } else if (err instanceof TiktokSearchAuthError) {
       await this.accountService.markCookieDead(String(acc._id), err.message);
       const msg = truncate(`[${acc.name}] cookie chết: ${err.message}`, 1000);
       await this.groupService.updateStatus(this.groupId, { lastError: msg });
