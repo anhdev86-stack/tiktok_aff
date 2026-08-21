@@ -90,6 +90,14 @@ export const crawlerApi = {
   groupStatus: (id: string) => get<CrawlerGroupStatus>(`/crawler/groups/${id}/status`),
   startGroup: (id: string) => post<void>(`/crawler/groups/${id}/start`),
   stopGroup: (id: string) => post<void>(`/crawler/groups/${id}/stop`),
+  /** POST — gom creator LIVE (LIVE GMV > 0) từ Tổng quan sang sheet Creator LIVE. */
+  backfillLive: (id: string) =>
+    post<{
+      scanned: number
+      live: number
+      appended: number
+      dataRowCount: number
+    }>(`/crawler/groups/${id}/backfill-live`),
 }
 
 // --- Crawler Groups ---

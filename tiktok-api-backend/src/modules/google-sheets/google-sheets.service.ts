@@ -648,6 +648,42 @@ export class GoogleSheetsService {
   }
 
   /**
+   * Đọc toàn bộ 1 tab → { header (row 1), rows (data) }. Dùng cho backfill.
+   *
+   * valueRenderOption=UNFORMATTED_VALUE: lấy giá trị THÔ (số là number JS) thay
+   * vì bản format hiển thị — nếu không cột tiền tệ trả về "$1,234.00"/"₫…" kèm
+   * ký hiệu, không so sánh số được. Tab không tồn tại → trả rỗng (không throw).
+   */
+  async readRows(params: {
+    spreadsheetId: string;
+    title: string;
+  }): Promise<{ header: unknown[]; rows: unknown[][]; saUsed: string }> {
+    return this.withSheetLock(params.spreadsheetId, () =>
+      this.rotator.withRotation(async (pick) => {
+        const sheets = this.buildClient(pick);
+        let values: unknown[][] = [];
+        try {
+          const res = await sheets.spreadsheets.values.get({
+            spreadsheetId: params.spreadsheetId,
+            range: `${params.title}!A1:ZZ`,
+            valueRenderOption: 'UNFORMATTED_VALUE',
+          });
+          values = (res.data.values ?? []) as unknown[][];
+        } catch (err) {
+          // Tab chưa tồn tại → Sheets ném 400 "Unable to parse range". Coi như rỗng.
+          const msg = err instanceof Error ? err.message : String(err);
+          if (!/Unable to parse range|not found/i.test(msg)) throw err;
+        }
+        return {
+          header: values[0] ?? [],
+          rows: values.slice(1),
+          saUsed: pick.clientEmail,
+        };
+      }),
+    );
+  }
+
+  /**
    * Apply format (header style, freeze, banding, autoResize) — gọi 1 lần
    * cuối job, sau khi xong streaming append.
    */

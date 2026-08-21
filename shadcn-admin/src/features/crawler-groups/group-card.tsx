@@ -1,8 +1,12 @@
 /**
  * Card hiển thị thông tin một CrawlerGroup với actions: Sửa / Accounts / Xoá.
  */
-import { Pencil, Trash2, Users } from 'lucide-react'
+import { useMutation } from '@tanstack/react-query'
+import { Pencil, Radio, Trash2, Users } from 'lucide-react'
+import { toast } from 'sonner'
+import { crawlerApi } from '@/lib/api-endpoints'
 import type { CrawlerGroup } from '@/lib/api-types'
+import { handleServerError } from '@/lib/handle-server-error'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
@@ -32,6 +36,17 @@ interface Props {
 }
 
 export function GroupCard({ group, onEdit, onManageAccounts, onDelete }: Props) {
+  const backfillMut = useMutation({
+    mutationFn: () => crawlerApi.backfillLive(group._id),
+    onSuccess: (r) => {
+      toast.success(
+        `Gom LIVE xong: quét ${r.scanned}, LIVE ${r.live}, +${r.appended} mới ` +
+          `(tổng ${r.dataRowCount})`,
+      )
+    },
+    onError: handleServerError,
+  })
+
   const ssidDisplay = group.spreadsheetId
     ? group.spreadsheetId.length > 20
       ? `${group.spreadsheetId.slice(0, 20)}…`
@@ -111,6 +126,16 @@ export function GroupCard({ group, onEdit, onManageAccounts, onDelete }: Props) 
           >
             <Users className='me-1.5 size-3.5' />
             Accounts
+          </Button>
+          <Button
+            size='icon'
+            variant='ghost'
+            className='shrink-0'
+            onClick={() => backfillMut.mutate()}
+            disabled={backfillMut.isPending || !group.spreadsheetId}
+            title='Gom creator LIVE (LIVE GMV > 0) sang sheet Creator LIVE'
+          >
+            <Radio className='size-4' />
           </Button>
           <Button
             size='icon'

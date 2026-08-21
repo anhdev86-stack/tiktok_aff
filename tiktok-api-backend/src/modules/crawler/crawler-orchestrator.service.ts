@@ -21,6 +21,7 @@ import { CrawlerGroupService } from '../crawler-group/crawler-group.service';
 import { TiktokAccountService } from '../tiktok-account/tiktok-account.service';
 import { AppSettingsService } from '../app-settings/app-settings.service';
 import { CrawlerRunOneAccount } from './crawler.run-one-account';
+import { CrawlerWriteSheets } from './crawler.write-sheets';
 import { GroupWorker } from './group-worker';
 
 const RECONCILE_INTERVAL_MS = 30_000;
@@ -38,7 +39,20 @@ export class CrawlerOrchestratorService
     private readonly accounts: TiktokAccountService,
     private readonly settings: AppSettingsService,
     private readonly runner: CrawlerRunOneAccount,
+    private readonly writer: CrawlerWriteSheets,
   ) {}
+
+  /**
+   * Backfill sheet "Creator LIVE" cho 1 group từ dữ liệu Tổng quan đã có.
+   * Chạy 1 lần theo yêu cầu admin (insert-only, lặp lại an toàn).
+   */
+  async backfillLive(groupId: string) {
+    const group = await this.groups.findById(groupId);
+    if (!group.spreadsheetId) {
+      throw new Error(`Group "${group.name}" chưa cấu hình spreadsheetId`);
+    }
+    return this.writer.backfillLive(group);
+  }
 
   // ─── Lifecycle ─────────────────────────────────────────────────────────────
 

@@ -142,6 +142,88 @@ export class CrawlerWriteSheets {
   }
 
   /**
+   * Backfill 1 lần: quét sheet Tổng quan hiện có → copy mọi creator có
+   * LIVE GMV > 0 sang sheet "Creator LIVE". Insert-only theo 'OEC ID' (chạy
+   * lại nhiều lần an toàn, không nhân đôi). Dùng để lấp sheet LIVE ngay từ
+   * hàng chục nghìn creator ĐÃ crawl, khỏi chờ crawler quét lại.
+   *
+   * Map cột theo TÊN header đọc từ sheet (không giả định thứ tự cột) rồi dựng
+   * lại đúng layout OVERVIEW_HEADER trước khi ghi.
+   */
+  async backfillLive(
+    group: CrawlerGroupDocument,
+  ): Promise<{ scanned: number; live: number; appended: number; dataRowCount: number }> {
+    const liveTitle = group.sheetLive || 'Creator LIVE';
+    const { header, rows } = await this.sheets.readRows({
+      spreadsheetId: group.spreadsheetId,
+      title: group.sheetOverview,
+    });
+
+    if (rows.length === 0) {
+      this.logger.log(
+        `[backfill LIVE] sheet "${group.sheetOverview}" trống — không có gì để gom`,
+      );
+      return { scanned: 0, live: 0, appended: 0, dataRowCount: 0 };
+    }
+
+    // Vị trí cột theo tên (header sheet có thể lệch thứ tự với OVERVIEW_HEADER).
+    const idxOf = (name: string) =>
+      (header as unknown[]).findIndex((h) => String(h) === name);
+    const liveIdx = idxOf('LIVE GMV');
+    if (liveIdx < 0) {
+      throw new Error(
+        `Sheet "${group.sheetOverview}" không có cột 'LIVE GMV' — không backfill được`,
+      );
+    }
+
+    // Lọc creator LIVE rồi dựng lại từng dòng đúng thứ tự OVERVIEW_HEADER.
+    const liveRows: (string | number | boolean)[][] = [];
+    for (const row of rows) {
+      const gmv = Number(row[liveIdx]);
+      if (!Number.isFinite(gmv) || gmv <= 0) continue;
+      liveRows.push(
+        (OVERVIEW_HEADER as readonly string[]).map((h) => {
+          const i = idxOf(h);
+          return i >= 0 ? normalizeCell(row[i]) : '';
+        }),
+      );
+    }
+
+    if (liveRows.length === 0) {
+      this.logger.log(
+        `[backfill LIVE] quét ${rows.length} creator, 0 có LIVE GMV > 0 ` +
+          `(enrich /profile có đang bật không?)`,
+      );
+      return { scanned: rows.length, live: 0, appended: 0, dataRowCount: 0 };
+    }
+
+    const result = await this.sheets.appendNewRows({
+      spreadsheetId: group.spreadsheetId,
+      title: liveTitle,
+      header: [...OVERVIEW_HEADER],
+      rows: liveRows,
+      keyColumn: 'OEC ID',
+      backfillColumns: ['Bio'],
+    });
+
+    await this.formatAll(group, {
+      perSheet: { [liveTitle]: result.dataRowCount },
+      sheetIds: { [liveTitle]: result.sheetId },
+    }).catch(() => undefined);
+
+    this.logger.log(
+      `[backfill LIVE] quét ${rows.length} creator → ${liveRows.length} LIVE, ` +
+        `+${result.appended} mới vào "${liveTitle}" (tổng ${result.dataRowCount})`,
+    );
+    return {
+      scanned: rows.length,
+      live: liveRows.length,
+      appended: result.appended,
+      dataRowCount: result.dataRowCount,
+    };
+  }
+
+  /**
    * Format sheet Tổng quan 1 LẦN (cuối vòng account) thay vì mỗi page.
    * dataRowCount lấy từ kết quả write page cuối (upsertOne trả tổng dòng sheet
    * sau merge). Lỗi format chỉ ảnh hưởng hiển thị → caller nên nuốt, không fail.

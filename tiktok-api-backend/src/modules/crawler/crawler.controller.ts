@@ -63,6 +63,28 @@ export class CrawlerController {
     return result;
   }
 
+  /**
+   * POST /crawler/groups/:groupId/backfill-live
+   * Gom 1 lần các creator LIVE (LIVE GMV > 0) từ sheet Tổng quan sang sheet
+   * "Creator LIVE". Insert-only, chạy lại an toàn.
+   */
+  @Post('groups/:groupId/backfill-live')
+  async backfillLive(
+    @Param('groupId') groupId: string,
+    @Req() req: AuthedRequest,
+  ) {
+    const result = await this.orchestrator.backfillLive(groupId);
+    void this.audit.record({
+      actor: req.user?.username,
+      action: 'crawler.group.backfill-live',
+      targetType: 'crawler_group',
+      targetId: groupId,
+      success: true,
+      ip: req.ip,
+    });
+    return result;
+  }
+
   /** POST /crawler/groups/:groupId/stop — disable and stop group worker. */
   @Post('groups/:groupId/stop')
   async stopGroup(
