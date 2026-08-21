@@ -39,10 +39,14 @@ export function GroupCard({ group, onEdit, onManageAccounts, onDelete }: Props) 
   const backfillMut = useMutation({
     mutationFn: () => crawlerApi.backfillLive(group._id),
     onSuccess: (r) => {
-      toast.success(
+      const msg =
         `Gom LIVE xong: quét ${r.scanned}, LIVE ${r.live}, +${r.appended} mới ` +
-          `(tổng ${r.dataRowCount})`,
-      )
+        `(tổng ${r.dataRowCount})`
+      if (r.formatError) {
+        toast.warning(`${msg} — nhưng format lỗi: ${r.formatError}`)
+      } else {
+        toast.success(msg)
+      }
     },
     onError: handleServerError,
   })

@@ -152,7 +152,13 @@ export class CrawlerWriteSheets {
    */
   async backfillLive(
     group: CrawlerGroupDocument,
-  ): Promise<{ scanned: number; live: number; appended: number; dataRowCount: number }> {
+  ): Promise<{
+    scanned: number;
+    live: number;
+    appended: number;
+    dataRowCount: number;
+    formatError?: string;
+  }> {
     const liveTitle = group.sheetLive || 'Creator LIVE';
     const { header, rows } = await this.sheets.readRows({
       spreadsheetId: group.spreadsheetId,
@@ -206,20 +212,31 @@ export class CrawlerWriteSheets {
       backfillColumns: ['Bio'],
     });
 
-    await this.formatAll(group, {
-      perSheet: { [liveTitle]: result.dataRowCount },
-      sheetIds: { [liveTitle]: result.sheetId },
-    }).catch(() => undefined);
+    // Format y hệt sheet Tổng quan (header tô màu, freeze, banding, tiền tệ).
+    // KHÔNG nuốt lặng như trước — lỗi format là lý do sheet "xấu", cần trả về
+    // để hiện lên UI thay vì đoán mò.
+    let formatError: string | undefined;
+    try {
+      await this.formatAll(group, {
+        perSheet: { [liveTitle]: result.dataRowCount },
+        sheetIds: { [liveTitle]: result.sheetId },
+      });
+    } catch (err) {
+      formatError = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`[backfill LIVE] format "${liveTitle}" lỗi: ${formatError}`);
+    }
 
     this.logger.log(
       `[backfill LIVE] quét ${rows.length} creator → ${liveRows.length} LIVE, ` +
-        `+${result.appended} mới vào "${liveTitle}" (tổng ${result.dataRowCount})`,
+        `+${result.appended} mới vào "${liveTitle}" (tổng ${result.dataRowCount})` +
+        (formatError ? ` — FORMAT LỖI: ${formatError}` : ' — đã format'),
     );
     return {
       scanned: rows.length,
       live: liveRows.length,
       appended: result.appended,
       dataRowCount: result.dataRowCount,
+      formatError,
     };
   }
 

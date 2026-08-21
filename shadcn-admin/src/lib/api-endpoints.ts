@@ -97,6 +97,7 @@ export const crawlerApi = {
       live: number
       appended: number
       dataRowCount: number
+      formatError?: string
     }>(`/crawler/groups/${id}/backfill-live`),
 }
 
