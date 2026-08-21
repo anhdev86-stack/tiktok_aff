@@ -34,6 +34,15 @@ export class CrawlerGroup {
   @Prop({ default: 'Tổng quan' })
   sheetOverview!: string;
 
+  /**
+   * Sheet danh sách creator LIVE — tập con của Tổng quan, chỉ creator có
+   * `LIVE GMV > 0` (creator có bán qua livestream). Cùng cột/format với Tổng
+   * quan, insert-only theo 'OEC ID'. '' → dùng default 'Creator LIVE' (doc cũ
+   * thiếu field vẫn chạy nhờ fallback trong CrawlerWriteSheets).
+   */
+  @Prop({ default: 'Creator LIVE' })
+  sheetLive!: string;
+
   @Prop({ default: 'Video nổi bật' })
   sheetTopVideos!: string;
 

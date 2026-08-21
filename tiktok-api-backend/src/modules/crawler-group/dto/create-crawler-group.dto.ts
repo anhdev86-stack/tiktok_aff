@@ -25,6 +25,11 @@ export class CreateCrawlerGroupDto {
   @IsString()
   sheetOverview?: string;
 
+  /** Tên sheet danh sách creator LIVE (LIVE GMV > 0). '' → 'Creator LIVE'. */
+  @IsOptional()
+  @IsString()
+  sheetLive?: string;
+
   @IsOptional()
   @IsString()
   sheetTopVideos?: string;

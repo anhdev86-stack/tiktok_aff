@@ -42,6 +42,22 @@ function buildOverviewRows(
   ]);
 }
 
+/**
+ * Creator "bán qua LIVE" = có `LIVE GMV > 0`. `pickMoneyValue` cho ra
+ * `number | null`, nên chỉ cần giữ số dương. Đây là lọc HẬU KỲ trên pool mà
+ * crawler đã lấy (không đụng tới việc ký/gọi TikTok) — an toàn tuyệt đối với
+ * pipeline đang chạy. Muốn coverage rộng hơn thì thêm filter LIVE thật vào
+ * /marketplace/find (cần capture payload từ UI affiliate).
+ */
+function filterLiveProfiles(
+  profiles: CreatorFullProfile[],
+): CreatorFullProfile[] {
+  return profiles.filter((p) => {
+    const gmv = p.overview.row['LIVE GMV'];
+    return typeof gmv === 'number' && gmv > 0;
+  });
+}
+
 @Injectable()
 export class CrawlerWriteSheets {
   private readonly logger = new Logger(CrawlerWriteSheets.name);
@@ -90,11 +106,39 @@ export class CrawlerWriteSheets {
         ` (tổng ${result.dataRowCount} creator)`,
     );
 
-    // Trả perSheet = tổng data row + sheetId để formatAll() format đúng vùng.
-    return {
-      perSheet: { [group.sheetOverview]: result.dataRowCount },
-      sheetIds: { [group.sheetOverview]: result.sheetId },
+    const perSheet: Record<string, number> = {
+      [group.sheetOverview]: result.dataRowCount,
     };
+    const sheetIds: Record<string, number> = {
+      [group.sheetOverview]: result.sheetId,
+    };
+
+    // ─── Sheet Creator LIVE (tập con: LIVE GMV > 0) ──────────────────────────
+    // Doc group cũ có thể thiếu `sheetLive` → fallback tên mặc định.
+    const liveTitle = group.sheetLive || 'Creator LIVE';
+    const liveProfiles = filterLiveProfiles(profiles);
+    if (liveProfiles.length > 0) {
+      const liveRows = buildOverviewRows(shopName, liveProfiles);
+      const liveResult = await this.sheets.appendNewRows({
+        spreadsheetId: group.spreadsheetId,
+        title: liveTitle,
+        header: [...OVERVIEW_HEADER],
+        rows: liveRows,
+        keyColumn: 'OEC ID',
+        backfillColumns: ['Bio'],
+      });
+      perSheet[liveTitle] = liveResult.dataRowCount;
+      sheetIds[liveTitle] = liveResult.sheetId;
+      this.logger.log(
+        `[${shopName}] sheet ${liveTitle} via SA=${liveResult.saUsed} ` +
+          `+${liveResult.appended} LIVE mới` +
+          (liveResult.backfilled > 0 ? `, vá ${liveResult.backfilled} Bio` : '') +
+          ` (tổng ${liveResult.dataRowCount} creator LIVE)`,
+      );
+    }
+
+    // Trả perSheet = tổng data row + sheetId để formatAll() format đúng vùng.
+    return { perSheet, sheetIds };
   }
 
   /**
@@ -112,6 +156,13 @@ export class CrawlerWriteSheets {
     const specs = [
       {
         title: group.sheetOverview,
+        header: [...OVERVIEW_HEADER],
+        columnSpecs: OVERVIEW_COL_SPECS,
+      },
+      // Sheet LIVE dùng chung cột/format với Tổng quan. Chỉ được format khi lượt
+      // này có ghi (filter `sheetIds[title] != null` bên dưới lo phần bỏ qua).
+      {
+        title: group.sheetLive || 'Creator LIVE',
         header: [...OVERVIEW_HEADER],
         columnSpecs: OVERVIEW_COL_SPECS,
       },

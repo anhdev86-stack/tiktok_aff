@@ -36,6 +36,7 @@ type FormState = {
   region: string
   spreadsheetId: string
   sheetOverview: string
+  sheetLive: string
   sheetTopVideos: string
   sheetTrend: string
 }
@@ -45,6 +46,7 @@ const DEFAULTS: FormState = {
   region: '',
   spreadsheetId: '',
   sheetOverview: 'Tổng quan',
+  sheetLive: 'Creator LIVE',
   sheetTopVideos: 'Video nổi bật',
   sheetTrend: 'Xu hướng',
 }
@@ -70,6 +72,7 @@ export function GroupFormDialog({ open, onOpenChange, group, onSuccess }: Props)
             region: group.region ?? '',
             spreadsheetId: group.spreadsheetId ?? '',
             sheetOverview: group.sheetOverview || 'Tổng quan',
+            sheetLive: group.sheetLive || 'Creator LIVE',
             sheetTopVideos: group.sheetTopVideos || 'Video nổi bật',
             sheetTrend: group.sheetTrend || 'Xu hướng',
           }
@@ -113,6 +116,7 @@ export function GroupFormDialog({ open, onOpenChange, group, onSuccess }: Props)
       region: form.region.trim().toUpperCase(),
       spreadsheetId: form.spreadsheetId.trim() || undefined,
       sheetOverview: form.sheetOverview.trim() || 'Tổng quan',
+      sheetLive: form.sheetLive.trim() || 'Creator LIVE',
       sheetTopVideos: form.sheetTopVideos.trim() || 'Video nổi bật',
       sheetTrend: form.sheetTrend.trim() || 'Xu hướng',
       categoryList: [],
@@ -184,6 +188,14 @@ export function GroupFormDialog({ open, onOpenChange, group, onSuccess }: Props)
                 id='cg-overview'
                 value={form.sheetOverview}
                 onChange={(e) => set('sheetOverview', e.target.value)}
+              />
+            </div>
+            <div className='grid gap-1.5'>
+              <Label htmlFor='cg-live'>Sheet Creator LIVE</Label>
+              <Input
+                id='cg-live'
+                value={form.sheetLive}
+                onChange={(e) => set('sheetLive', e.target.value)}
               />
             </div>
             <div className='grid gap-1.5'>

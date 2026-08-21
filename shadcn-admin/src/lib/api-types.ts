@@ -127,6 +127,8 @@ export interface CrawlerGroup {
   region: string
   spreadsheetId: string
   sheetOverview: string
+  /** Sheet danh sách creator LIVE (LIVE GMV > 0). */
+  sheetLive: string
   sheetTopVideos: string
   sheetTrend: string
   categoryList: Array<[string, string]>
@@ -146,6 +148,7 @@ export interface CreateCrawlerGroupInput {
   region?: string
   spreadsheetId?: string
   sheetOverview?: string
+  sheetLive?: string
   sheetTopVideos?: string
   sheetTrend?: string
   categoryList?: Array<[string, string]>
