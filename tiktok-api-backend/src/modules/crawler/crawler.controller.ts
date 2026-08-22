@@ -64,6 +64,16 @@ export class CrawlerController {
   }
 
   /**
+   * GET /crawler/groups/:groupId/profile-fields
+   * DIAGNOSTIC — trả tên field liên quan GMV/kênh trong /profile của 1 creator,
+   * để xác định field "GMV theo kênh" (Video/LIVE/Thẻ sản phẩm) cần cào.
+   */
+  @Get('groups/:groupId/profile-fields')
+  profileFields(@Param('groupId') groupId: string) {
+    return this.orchestrator.debugProfileFields(groupId);
+  }
+
+  /**
    * POST /crawler/groups/:groupId/backfill-live
    * Gom 1 lần các creator LIVE (LIVE GMV > 0) từ sheet Tổng quan sang sheet
    * "Creator LIVE". Insert-only, chạy lại an toàn.

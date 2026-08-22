@@ -2,7 +2,7 @@
  * Card hiển thị thông tin một CrawlerGroup với actions: Sửa / Accounts / Xoá.
  */
 import { useMutation } from '@tanstack/react-query'
-import { Pencil, Radio, Trash2, Users } from 'lucide-react'
+import { Pencil, Radio, ScanSearch, Trash2, Users } from 'lucide-react'
 import { toast } from 'sonner'
 import { crawlerApi } from '@/lib/api-endpoints'
 import type { CrawlerGroup } from '@/lib/api-types'
@@ -47,6 +47,19 @@ export function GroupCard({ group, onEdit, onManageAccounts, onDelete }: Props) 
       } else {
         toast.success(msg)
       }
+    },
+    onError: handleServerError,
+  })
+
+  const fieldsMut = useMutation({
+    mutationFn: () => crawlerApi.profileFields(group._id),
+    onSuccess: (r) => {
+      const fields = r.matchedFields.join(', ') || '(không có field khớp)'
+      // eslint-disable-next-line no-console
+      console.log('[profile-fields] oec=' + r.oecId, r.matchedFields, r.samples)
+      toast.success(`Field GMV/kênh (oec ${r.oecId}): ${fields}`, {
+        duration: 30000,
+      })
     },
     onError: handleServerError,
   })
@@ -140,6 +153,16 @@ export function GroupCard({ group, onEdit, onManageAccounts, onDelete }: Props) 
             title='Gom creator LIVE (LIVE GMV > 0) sang sheet Creator LIVE'
           >
             <Radio className='size-4' />
+          </Button>
+          <Button
+            size='icon'
+            variant='ghost'
+            className='shrink-0'
+            onClick={() => fieldsMut.mutate()}
+            disabled={fieldsMut.isPending}
+            title='Dò tên field GMV/kênh trong /profile (diagnostic)'
+          >
+            <ScanSearch className='size-4' />
           </Button>
           <Button
             size='icon'

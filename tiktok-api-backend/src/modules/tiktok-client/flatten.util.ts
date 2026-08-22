@@ -19,6 +19,7 @@ export type ColumnType =
   | 'integer'
   | 'number'
   | 'currency'
+  | 'percent'
   | 'date';
 
 export interface ColumnSpec {

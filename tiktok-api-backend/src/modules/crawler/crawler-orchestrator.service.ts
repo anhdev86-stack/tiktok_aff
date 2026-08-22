@@ -22,6 +22,7 @@ import { TiktokAccountService } from '../tiktok-account/tiktok-account.service';
 import { AppSettingsService } from '../app-settings/app-settings.service';
 import { CrawlerRunOneAccount } from './crawler.run-one-account';
 import { CrawlerWriteSheets } from './crawler.write-sheets';
+import { TiktokClientService } from '../tiktok-client/tiktok-client.service';
 import { GroupWorker } from './group-worker';
 
 const RECONCILE_INTERVAL_MS = 30_000;
@@ -40,7 +41,25 @@ export class CrawlerOrchestratorService
     private readonly settings: AppSettingsService,
     private readonly runner: CrawlerRunOneAccount,
     private readonly writer: CrawlerWriteSheets,
+    private readonly tiktok: TiktokClientService,
   ) {}
+
+  /**
+   * DIAGNOSTIC — dò tên field "GMV theo kênh" trong /profile, dùng cookie 1
+   * account của group. Chạy theo yêu cầu để mình biết field cần cào.
+   */
+  async debugProfileFields(groupId: string) {
+    const accs = await this.accounts.findByGroup(groupId);
+    const acc = accs.find((a) => a.cookie && a.cookieAlive !== false) ?? accs[0];
+    if (!acc?.cookie) {
+      throw new Error(`Group không có account nào có cookie`);
+    }
+    return this.tiktok.debugProfileFields({
+      cookie: acc.cookie,
+      shopId: acc.shopId,
+      shopRegion: acc.shopRegion,
+    });
+  }
 
   /**
    * Backfill sheet "Creator LIVE" cho 1 group từ dữ liệu Tổng quan đã có.

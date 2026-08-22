@@ -773,6 +773,83 @@ export class TiktokClientService {
     return results;
   }
 
+  /**
+   * DIAGNOSTIC — dò tên field "GMV theo kênh" (Video/LIVE/Thẻ sản phẩm) trong
+   * response /profile. Dùng đúng pipeline ký của crawler (không cần X-Bogus tay).
+   * Lấy 1 creator từ find (hoặc oecId chỉ định), gọi profile type 1-7, gom mọi
+   * key path khớp gmv/channel/live/video/ratio. Trả về để UI hiện.
+   */
+  async debugProfileFields(opts: {
+    cookie: string;
+    shopId: string;
+    shopRegion: string;
+    oecId?: string;
+  }): Promise<{
+    oecId: string;
+    matchedFields: string[];
+    samples: Record<string, string>;
+  }> {
+    let oecId = opts.oecId;
+    if (!oecId) {
+      const found = await this.searchCreators({
+        cookie: opts.cookie,
+        shopId: opts.shopId,
+        shopRegion: opts.shopRegion,
+        page: 0,
+      });
+      oecId = found.items[0]?.oec_id;
+      if (!oecId) {
+        throw new InternalServerErrorException(
+          'debugProfileFields: find trả 0 creator',
+        );
+      }
+    }
+
+    const refererUrl =
+      `https://affiliate.tiktok.com/connection/creator/detail` +
+      `?cid=${encodeURIComponent(oecId)}` +
+      `&pair_source=author_recommend&enter_from=affiliate_find_creators&query=` +
+      `&shop_region=${encodeURIComponent(opts.shopRegion)}` +
+      `&shop_id=${encodeURIComponent(opts.shopId)}`;
+
+    const matched = new Set<string>();
+    const samples: Record<string, string> = {};
+    const rx = /gmv|channel|ratio|percent|proportion|share|distribut|breakdown|source|live|video/i;
+
+    for (const t of [1, 2, 3, 4, 5, 6, 7]) {
+      const body = JSON.stringify({ creator_oec_id: oecId, profile_types: [t] });
+      const res = await this.sessionManager.signAndFetch({
+        cookie: opts.cookie,
+        shopId: opts.shopId,
+        shopRegion: opts.shopRegion,
+        apiPath: PROFILE_PATH,
+        body,
+        refererUrl,
+      });
+      if (res.error) continue;
+      const parsed = this.parseJson(res.body);
+      const walk = (o: unknown, p: string): void => {
+        if (!o || typeof o !== 'object') return;
+        for (const [k, v] of Object.entries(o as Record<string, unknown>)) {
+          const np = p ? `${p}.${k}` : k;
+          if (rx.test(k)) {
+            matched.add(np);
+            if (samples[np] === undefined) {
+              samples[np] =
+                v && typeof v === 'object'
+                  ? JSON.stringify(v).slice(0, 160)
+                  : String(v);
+            }
+          }
+          if (v && typeof v === 'object') walk(v, np);
+        }
+      };
+      walk(parsed, '');
+    }
+
+    return { oecId, matchedFields: [...matched].sort(), samples };
+  }
+
   // ─── Helpers ─────────────────────────────────────────────────────────────
 
   private creatorRefererUrl(p: { shopId: string; shopRegion: string }): string {

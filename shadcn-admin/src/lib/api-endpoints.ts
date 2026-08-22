@@ -90,6 +90,13 @@ export const crawlerApi = {
   groupStatus: (id: string) => get<CrawlerGroupStatus>(`/crawler/groups/${id}/status`),
   startGroup: (id: string) => post<void>(`/crawler/groups/${id}/start`),
   stopGroup: (id: string) => post<void>(`/crawler/groups/${id}/stop`),
+  /** GET — dò tên field GMV/kênh trong /profile (diagnostic). */
+  profileFields: (id: string) =>
+    get<{
+      oecId: string
+      matchedFields: string[]
+      samples: Record<string, string>
+    }>(`/crawler/groups/${id}/profile-fields`),
   /** POST — gom creator LIVE (LIVE GMV > 0) từ Tổng quan sang sheet Creator LIVE. */
   backfillLive: (id: string) =>
     post<{
